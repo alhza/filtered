@@ -24,6 +24,14 @@ Line format:
 IP:PORT#COUNTRY-LOCAL_DOWNLOAD_Mbps
 ```
 
+Selection priority:
+
+```text
+1. Keep every reachable node with local download speed > 10Mbps.
+2. Fill the remaining slots up to 150 by balanced country rotation.
+3. Every final node must pass Cloudflare trace and local download test.
+```
+
 ## Local Run
 
 ```powershell
