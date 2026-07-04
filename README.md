@@ -24,9 +24,6 @@ Line format:
 IP:PORT#中文国家-LOCAL_DOWNLOAD_Mbps
 ```
 
-Only country and local download speed are shown in the node name. Duplicate
-country-speed labels may include a numeric suffix such as `-01`.
-
 Selection priority:
 
 ```text
@@ -76,4 +73,11 @@ https://raw.githubusercontent.com/lu-lingyun/CloudflareST/main/TLS.txt
 https://raw.githubusercontent.com/lu-lingyun/CloudflareST/main/open_ips.txt
 https://bestcf.pages.dev/uouin/all.txt
 https://zip.cm.edu.kg/all.txt
+https://addressesapi.090227.xyz/CloudFlareYes
+https://addressesapi.090227.xyz/cmcc-ipv6
+https://cf.090227.xyz/ct?ips=6
+https://cf.090227.xyz/cu
+https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v4
+https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v6
+https://api.hostmonit.com/get_optimization_ip
 ```

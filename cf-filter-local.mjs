@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import tls from 'node:tls';
 
-const MASTER_APIS = [
+const SOURCES = [
 	'https://ips.gaoji.uk/best_ips.txt',
 	'https://raw.githubusercontent.com/svip-s/cloudflare_ip/refs/heads/main/best_ips.txt',
 	'https://raw.githubusercontent.com/love-ztm/cfip/refs/heads/main/best_ips.txt',
@@ -18,13 +18,45 @@ const MASTER_APIS = [
 	'https://raw.githubusercontent.com/lu-lingyun/CloudflareST/main/open_ips.txt',
 	'https://bestcf.pages.dev/uouin/all.txt',
 	'https://zip.cm.edu.kg/all.txt',
+	'https://addressesapi.090227.xyz/CloudFlareYes',
+	'https://addressesapi.090227.xyz/cmcc-ipv6',
+	'https://cf.090227.xyz/ct?ips=6',
+	'https://cf.090227.xyz/cu',
+	{
+		url: 'https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v4',
+		parser: 'wetest',
+	},
+	{
+		url: 'https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v6',
+		parser: 'wetest',
+	},
+	{
+		url: 'https://api.hostmonit.com/get_optimization_ip',
+		parser: 'hostmonit',
+		method: 'POST',
+		body: { key: 'iDetkOys' },
+	},
+	{
+		url: 'https://api.hostmonit.com/get_optimization_ip',
+		parser: 'hostmonit',
+		method: 'POST',
+		body: { key: 'iDetkOys', type: 'v6' },
+	},
 ];
 
-const DEFAULT_COUNTRIES = [
-	'HK', 'JP', 'SG', 'TW', 'US', 'KR', 'DE', 'NL', 'GB', 'FR', 'FI', 'SE',
-	'CH', 'PL', 'LV', 'CA', 'AU', 'RU', 'TH', 'MY', 'VN', 'IN',
-];
 const DEFAULT_PORTS = ['443', '8443', '2053', '2083', '2087', '2096'];
+const SCORE_WEIGHTS = {
+	speed: 120,
+	metrics: 320,
+	countryBase: 240,
+	countryStep: 6,
+	portBase: 120,
+	portStep: 8,
+	sourceBase: 90,
+	sourceStep: 12,
+	latencyDivisor: 8,
+	probeDivisor: 4,
+};
 
 const COLO_COUNTRY = {
 	HKG: 'HK', NRT: 'JP', KIX: 'JP', FUK: 'JP', SIN: 'SG', TPE: 'TW', ICN: 'KR',
@@ -60,6 +92,7 @@ const COUNTRY_LABELS = {
 	VN: '越南',
 	IN: '印度',
 };
+const DEFAULT_COUNTRIES = Object.keys(COUNTRY_LABELS);
 
 const args = parseArgs(process.argv.slice(2));
 const options = {
@@ -82,35 +115,44 @@ const options = {
 	json: args.json || 'filtered-best-nodes.json',
 };
 
-const startedAt = Date.now();
-const fetched = await fetchSources(MASTER_APIS);
-const parsed = dedupeCandidates(fetched.flatMap(({ url, text, sourceIndex }) => parseSource(text, url, sourceIndex)));
-const scoped = applyStaticFilters(parsed, options);
-const queue = selectCheckQueue(scoped, options);
-const checked = await checkCandidates(queue, options);
-const usable = checked.filter(item => {
-	const countrySet = new Set(options.countries);
-	const countryOk = countrySet.size === 0 || countrySet.has(item.country);
-	return item.ok && item.probeMs <= options.maxProbe && countryOk;
-});
-const speedQueue = options.speedTest ? selectSpeedQueue(usable, options) : usable;
-const measured = options.speedTest ? await speedTestCandidates(speedQueue, options) : usable;
-const speedUsable = options.speedTest ? measured.filter(item => Number.isFinite(item.localSpeedMbps)) : measured;
-const selected = selectFinalNodes(speedUsable, options);
+await run();
 
-await fs.writeFile(options.out, formatNodeLines(selected).join('\n') + (selected.length ? '\n' : ''), 'utf8');
-await fs.writeFile(options.json, JSON.stringify({
-	generatedAt: new Date().toISOString(),
-	elapsedMs: Date.now() - startedAt,
-	sources: fetched.map(item => ({
-		url: item.url,
-		ok: item.ok,
-		status: item.status,
-		bytes: item.text?.length || 0,
-		error: item.error || null,
-	})),
-	options,
-	stats: {
+async function run() {
+	const startedAt = Date.now();
+	const fetched = await fetchSources(SOURCES);
+	const parsed = dedupeCandidates(fetched.flatMap(source => parseSource(source)));
+	const scoped = applyStaticFilters(parsed, options);
+	const queue = selectCheckQueue(scoped, options);
+	const checked = await checkCandidates(queue, options);
+	const usable = filterUsableChecked(checked, options);
+	const speedQueue = options.speedTest ? selectSpeedQueue(usable, options) : usable;
+	const measured = options.speedTest ? await speedTestCandidates(speedQueue, options) : usable;
+	const speedUsable = options.speedTest ? measured.filter(item => Number.isFinite(item.localSpeedMbps)) : measured;
+	const selected = selectFinalNodes(speedUsable, options);
+	const context = { startedAt, fetched, parsed, scoped, queue, checked, usable, speedQueue, measured, speedUsable, selected, options };
+
+	await writeOutputs(context);
+	printSummary(context);
+}
+
+async function writeOutputs(context) {
+	await fs.writeFile(context.options.out, formatNodeLines(context.selected).join('\n') + (context.selected.length ? '\n' : ''), 'utf8');
+	await fs.writeFile(context.options.json, JSON.stringify(buildReport(context), null, 2), 'utf8');
+}
+
+function buildReport({ startedAt, fetched, parsed, scoped, queue, checked, usable, speedQueue, measured, speedUsable, selected, options }) {
+	return {
+		generatedAt: new Date().toISOString(),
+		elapsedMs: Date.now() - startedAt,
+		sources: fetched.map(formatSourceSummary),
+		options,
+		stats: buildStats({ parsed, scoped, queue, checked, usable, speedQueue, measured, speedUsable, selected, options }),
+		nodes: selected,
+	};
+}
+
+function buildStats({ parsed, scoped, queue, checked, usable, speedQueue, measured, speedUsable, selected, options }) {
+	return {
 		parsed: parsed.length,
 		scoped: scoped.length,
 		queued: queue.length,
@@ -125,25 +167,42 @@ await fs.writeFile(options.json, JSON.stringify({
 		highSpeedSelected: selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
 		countryDistribution: countBy(selected, 'country'),
 		portDistribution: countBy(selected, 'port'),
-	},
-	nodes: selected,
-}, null, 2), 'utf8');
+	};
+}
 
-console.log(`parsed=${parsed.length} scoped=${scoped.length} queued=${queue.length} checked=${checked.length} usable=${usable.length} speedQueued=${speedQueue.length} speedUsable=${speedUsable.length} selected=${selected.length}`);
-console.log(`highSpeed>${options.minKeepSpeed}Mbps queued=${queue.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} usable=${speedUsable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} selected=${selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length}`);
-console.log(`countries=${JSON.stringify(countBy(selected, 'country'))}`);
-console.log(`ports=${JSON.stringify(countBy(selected, 'port'))}`);
-console.log(`wrote ${options.out}`);
-console.log(`wrote ${options.json}`);
-console.log(formatNodeLines(selected.slice(0, 12)).join('\n'));
+function formatSourceSummary(item) {
+	return {
+		url: item.url,
+		parser: item.parser,
+		method: item.method,
+		ok: item.ok,
+		status: item.status,
+		bytes: item.text?.length || 0,
+		error: item.error || null,
+	};
+}
+
+function printSummary({ parsed, scoped, queue, checked, usable, speedQueue, speedUsable, selected, options }) {
+	console.log(`parsed=${parsed.length} scoped=${scoped.length} queued=${queue.length} checked=${checked.length} usable=${usable.length} speedQueued=${speedQueue.length} speedUsable=${speedUsable.length} selected=${selected.length}`);
+	console.log(`highSpeed>${options.minKeepSpeed}Mbps queued=${queue.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} usable=${speedUsable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} selected=${selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length}`);
+	console.log(`countries=${JSON.stringify(countBy(selected, 'country'))}`);
+	console.log(`ports=${JSON.stringify(countBy(selected, 'port'))}`);
+	console.log(`wrote ${options.out}`);
+	console.log(`wrote ${options.json}`);
+	console.log(formatNodeLines(selected.slice(0, 12)).join('\n'));
+}
 
 async function fetchSources(urls) {
-	const results = new Array(urls.length);
+	return mapConcurrent(urls, 4, (source, sourceIndex) => fetchSource(source, sourceIndex));
+}
+
+async function mapConcurrent(items, concurrency, mapper) {
+	const results = new Array(items.length);
 	let index = 0;
-	const workers = Array.from({ length: 4 }, async () => {
-		while (index < urls.length) {
-			const sourceIndex = index++;
-			results[sourceIndex] = await fetchSource(urls[sourceIndex], sourceIndex);
+	const workers = Array.from({ length: Math.max(1, concurrency) }, async () => {
+		while (index < items.length) {
+			const current = index++;
+			results[current] = await mapper(items[current], current);
 		}
 	});
 	await Promise.all(workers);
@@ -151,20 +210,23 @@ async function fetchSources(urls) {
 }
 
 async function fetchSource(url, sourceIndex) {
+	const source = normalizeSource(url);
 	for (let attempt = 1; attempt <= 3; attempt++) {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), 45000);
 		try {
-			const response = await fetch(url, {
+			const response = await fetch(source.url, {
+				method: source.method,
 				signal: controller.signal,
-				headers: { 'User-Agent': 'filtered-cf-nodes/1.0' },
+				headers: source.headers,
+				body: source.body ? JSON.stringify(source.body) : undefined,
 			});
 			const text = response.ok ? await response.text() : '';
-			return { url, sourceIndex, ok: response.ok, status: response.status, text };
+			return { ...source, sourceIndex, ok: response.ok, status: response.status, text };
 		} catch (error) {
 			if (attempt === 3) {
 				return {
-					url,
+					...source,
 					sourceIndex,
 					ok: false,
 					status: 0,
@@ -178,13 +240,106 @@ async function fetchSource(url, sourceIndex) {
 	}
 }
 
-function parseSource(text, sourceUrl, sourceIndex) {
+function normalizeSource(source) {
+	if (typeof source === 'string') {
+		return {
+			url: source,
+			parser: 'text',
+			method: 'GET',
+			headers: { 'User-Agent': 'filtered-cf-nodes/1.0' },
+		};
+	}
+	const method = source.method || 'GET';
+	return {
+		...source,
+		parser: source.parser || 'text',
+		method,
+		headers: {
+			'User-Agent': 'filtered-cf-nodes/1.0',
+			...(source.body ? { 'Content-Type': 'application/json' } : {}),
+			...(source.headers || {}),
+		},
+	};
+}
+
+function parseSource(source) {
+	if (!source.ok) return [];
+	if (source.parser === 'wetest') return parseWeTestSource(source);
+	if (source.parser === 'hostmonit') return parseHostMonitSource(source);
+	return parseTextSource(source);
+}
+
+function parseTextSource({ text, url, sourceIndex }) {
 	const rows = [];
 	for (const rawLine of String(text || '').split(/\r?\n/)) {
-		const row = parseLine(rawLine, sourceUrl, sourceIndex);
+		const row = parseLine(rawLine, url, sourceIndex);
 		if (row) rows.push(row);
 	}
 	return rows;
+}
+
+function parseWeTestSource({ text, url, sourceIndex }) {
+	const data = parseJson(text);
+	const groups = data?.info && typeof data.info === 'object' ? Object.entries(data.info) : [];
+	return groups.flatMap(([group, items]) => Array.isArray(items)
+		? items.map(item => makeStructuredCandidate({
+			host: item.ip,
+			country: COLO_COUNTRY[item.colo] || '',
+			remark: `${item.line_name || group}-${item.colo || 'CF'}`,
+			sourceUrl: url,
+			sourceIndex,
+			latencyMs: numberOrNull(item.rtt_avg),
+			speedMbps: numberOrNull(item.bandwidth) ?? speedToMbps(numberOrNull(item.speed), 'KB/S'),
+			meta: {
+				sourceType: 'wetest',
+				line: item.line,
+				lineName: item.line_name,
+				cfColo: item.colo,
+				lossRate: numberOrNull(item.loss_rate),
+				updatedAt: item.updated_at || null,
+			},
+		})).filter(Boolean)
+		: []);
+}
+
+function parseHostMonitSource({ text, url, sourceIndex }) {
+	const data = parseJson(text);
+	const items = Array.isArray(data?.info) ? data.info : [];
+	return items.map(item => makeStructuredCandidate({
+		host: item.ip,
+		country: COLO_COUNTRY[item.colo] || '',
+		remark: `${item.line || 'CF'}-${item.colo || item.node || 'Default'}`,
+		sourceUrl: url,
+		sourceIndex,
+		latencyMs: numberOrNull(item.latency),
+		speedMbps: speedToMbps(numberOrNull(item.speed), 'KB/S'),
+		meta: {
+			sourceType: 'hostmonit',
+			line: item.line,
+			node: item.node,
+			cfColo: item.colo,
+			lossRate: numberOrNull(item.loss),
+			updatedAt: item.time || null,
+		},
+	})).filter(Boolean);
+}
+
+function makeStructuredCandidate({ host, country, remark, sourceUrl, sourceIndex, latencyMs, speedMbps, meta }) {
+	if (!host) return null;
+	const port = '443';
+	const cleanHost = String(host).replace(/^\[|\]$/g, '').trim();
+	return {
+		host: cleanHost,
+		port,
+		country,
+		remark,
+		sourceUrl,
+		sourceIndex,
+		latencyMs,
+		speedMbps,
+		line: `${formatEndpoint({ host: cleanHost, port })}#${remark || country || sourceHost(sourceUrl)}`,
+		...meta,
+	};
 }
 
 function parseLine(rawLine, sourceUrl, sourceIndex) {
@@ -210,7 +365,7 @@ function parseLine(rawLine, sourceUrl, sourceIndex) {
 		sourceIndex,
 		latencyMs: metrics.latencyMs,
 		speedMbps: metrics.speedMbps,
-		line: `${host}:${port}#${remark || country || sourceHost(sourceUrl)}`,
+		line: `${formatEndpoint({ host, port })}#${remark || country || sourceHost(sourceUrl)}`,
 	};
 }
 
@@ -235,16 +390,7 @@ function applyStaticFilters(candidates, { countries, ports }) {
 }
 
 async function checkCandidates(candidates, { concurrency, connectTimeout, probeHost }) {
-	const results = [];
-	let index = 0;
-	const workers = Array.from({ length: Math.max(1, concurrency) }, async () => {
-		while (index < candidates.length) {
-			const item = candidates[index++];
-			results.push(await checkCloudflareTrace(item, connectTimeout, probeHost));
-		}
-	});
-	await Promise.all(workers);
-	return results;
+	return mapConcurrent(candidates, concurrency, item => checkCloudflareTrace(item, connectTimeout, probeHost));
 }
 
 function checkCloudflareTrace(candidate, timeoutMs, probeHost) {
@@ -293,66 +439,68 @@ function checkCloudflareTrace(candidate, timeoutMs, probeHost) {
 }
 
 function selectCheckQueue(candidates, options) {
-	const targetSize = Math.max(options.scan, options.limit);
-	const selected = new Map();
-	const highSpeed = candidates
-		.filter(item => isHighSpeed(item, options.minKeepSpeed))
-		.sort(compareCandidateScore);
-	for (const item of highSpeed) selected.set(candidateKey(item), item);
+	return selectPriorityFill(candidates, {
+		targetSize: Math.max(options.scan, options.limit),
+		minKeepSpeed: options.minKeepSpeed,
+		balanced: options.balanced,
+		countries: options.countries,
+		compareFn: compareCandidateScore,
+	});
+}
 
-	const rest = candidates.filter(item => !selected.has(candidateKey(item)));
-	const fillLimit = Math.max(0, targetSize - selected.size);
-	const fill = options.balanced
-		? balancedTake(groupAndSort(rest, compareCandidateScore), fillLimit, options.countries)
-		: rest.sort(compareCandidateScore).slice(0, fillLimit);
-	for (const item of fill) selected.set(candidateKey(item), item);
-	return [...selected.values()];
+function filterUsableChecked(items, { countries, maxProbe }) {
+	const countrySet = new Set(countries);
+	return items.filter(item => {
+		const countryOk = countrySet.size === 0 || countrySet.has(item.country);
+		return item.ok && item.probeMs <= maxProbe && countryOk;
+	});
 }
 
 function selectFinalNodes(candidates, options) {
-	const selected = new Map();
-	const highSpeed = candidates
-		.filter(item => isHighSpeed(item, options.minKeepSpeed))
-		.sort(compareCheckedScore);
-	for (const item of highSpeed) selected.set(candidateKey(item), item);
-
-	const rest = candidates.filter(item => !selected.has(candidateKey(item)));
-	const fillLimit = Math.max(0, options.limit - selected.size);
-	const fill = options.balanced
-		? balancedTake(groupAndSort(rest, compareCheckedScore), fillLimit, options.countries)
-		: rest.sort(compareCheckedScore).slice(0, fillLimit);
-	for (const item of fill) selected.set(candidateKey(item), item);
-	return [...selected.values()];
+	return selectPriorityFill(candidates, {
+		targetSize: options.limit,
+		maxSize: options.limit,
+		minKeepSpeed: options.minKeepSpeed,
+		balanced: options.balanced,
+		countries: options.countries,
+		compareFn: compareCheckedScore,
+	});
 }
 
 function selectSpeedQueue(candidates, options) {
-	const targetSize = Math.max(options.speedScan, options.limit);
+	return selectPriorityFill(candidates, {
+		targetSize: Math.max(options.speedScan, options.limit),
+		minKeepSpeed: options.minKeepSpeed,
+		balanced: options.balanced,
+		countries: options.countries,
+		compareFn: compareCheckedScore,
+	});
+}
+
+function selectPriorityFill(candidates, { targetSize, minKeepSpeed, balanced, countries, compareFn, maxSize = Infinity }) {
 	const selected = new Map();
 	const highSpeed = candidates
-		.filter(item => isHighSpeed(item, options.minKeepSpeed))
-		.sort(compareCheckedScore);
-	for (const item of highSpeed) selected.set(candidateKey(item), item);
+		.filter(item => isHighSpeed(item, minKeepSpeed))
+		.sort(compareFn);
+	for (const item of highSpeed) {
+		if (selected.size >= maxSize) break;
+		selected.set(candidateKey(item), item);
+	}
 
 	const rest = candidates.filter(item => !selected.has(candidateKey(item)));
-	const fillLimit = Math.max(0, targetSize - selected.size);
-	const fill = options.balanced
-		? balancedTake(groupAndSort(rest, compareCheckedScore), fillLimit, options.countries)
-		: rest.sort(compareCheckedScore).slice(0, fillLimit);
-	for (const item of fill) selected.set(candidateKey(item), item);
+	const fillLimit = Math.max(0, Math.min(targetSize, maxSize) - selected.size);
+	const fill = balanced
+		? balancedTake(groupAndSort(rest, compareFn), fillLimit, countries)
+		: rest.sort(compareFn).slice(0, fillLimit);
+	for (const item of fill) {
+		if (selected.size >= maxSize) break;
+		selected.set(candidateKey(item), item);
+	}
 	return [...selected.values()];
 }
 
 async function speedTestCandidates(candidates, { speedConcurrency, speedTimeout, speedBytes, probeHost }) {
-	const results = [];
-	let index = 0;
-	const workers = Array.from({ length: Math.max(1, speedConcurrency) }, async () => {
-		while (index < candidates.length) {
-			const item = candidates[index++];
-			results.push(await testDownloadSpeed(item, speedTimeout, speedBytes, probeHost));
-		}
-	});
-	await Promise.all(workers);
-	return results;
+	return mapConcurrent(candidates, speedConcurrency, item => testDownloadSpeed(item, speedTimeout, speedBytes, probeHost));
 }
 
 function testDownloadSpeed(candidate, timeoutMs, bytes, probeHost) {
@@ -462,30 +610,26 @@ function compareCheckedScore(a, b) {
 }
 
 function scoreChecked(item) {
-	return scoreCandidate(item) - (item.probeMs || 9999) / 4;
+	return scoreCandidate(item) - (item.probeMs || 9999) / SCORE_WEIGHTS.probeDivisor;
 }
 
 function scoreCandidate(item) {
 	const speed = measuredSpeedMbps(item);
 	const latency = Number.isFinite(item.latencyMs) ? item.latencyMs : 9999;
-	const countryBonus = DEFAULT_COUNTRIES.includes(item.country) ? 240 - DEFAULT_COUNTRIES.indexOf(item.country) * 6 : 0;
-	const portBonus = DEFAULT_PORTS.includes(item.port) ? 120 - DEFAULT_PORTS.indexOf(item.port) * 8 : 0;
-	const sourceBonus = Math.max(0, 90 - item.sourceIndex * 12);
-	const metricsBonus = Number.isFinite(item.speedMbps) || Number.isFinite(item.latencyMs) ? 320 : 0;
-	return speed * 120 + metricsBonus + countryBonus + portBonus + sourceBonus - latency / 8;
+	const countryBonus = orderedBonus(item.country, DEFAULT_COUNTRIES, SCORE_WEIGHTS.countryBase, SCORE_WEIGHTS.countryStep);
+	const portBonus = orderedBonus(item.port, DEFAULT_PORTS, SCORE_WEIGHTS.portBase, SCORE_WEIGHTS.portStep);
+	const sourceBonus = Math.max(0, SCORE_WEIGHTS.sourceBase - item.sourceIndex * SCORE_WEIGHTS.sourceStep);
+	const metricsBonus = Number.isFinite(item.speedMbps) || Number.isFinite(item.latencyMs) ? SCORE_WEIGHTS.metrics : 0;
+	return speed * SCORE_WEIGHTS.speed + metricsBonus + countryBonus + portBonus + sourceBonus - latency / SCORE_WEIGHTS.latencyDivisor;
+}
+
+function orderedBonus(value, orderedValues, base, step) {
+	const index = orderedValues.indexOf(value);
+	return index === -1 ? 0 : Math.max(0, base - index * step);
 }
 
 function formatNodeLines(items) {
-	const baseLabels = items.map(formatNodeLabel);
-	const totals = countValues(baseLabels);
-	const seen = new Map();
-	return items.map((item, index) => {
-		const base = baseLabels[index];
-		const next = (seen.get(base) || 0) + 1;
-		seen.set(base, next);
-		const label = totals[base] > 1 ? `${base}-${String(next).padStart(2, '0')}` : base;
-		return `${item.host}:${item.port}#${label}`;
-	});
+	return items.map(item => `${formatEndpoint(item)}#${formatNodeLabel(item)}`);
 }
 
 function formatNodeLabel(item) {
@@ -504,6 +648,11 @@ function formatSpeed(value) {
 	if (!Number.isFinite(value)) return 'NA';
 	if (value >= 10) return `${Math.round(value)}M`;
 	return `${Math.max(0.1, Math.round(value * 10) / 10)}M`;
+}
+
+function formatEndpoint({ host, port }) {
+	const formattedHost = String(host).includes(':') ? `[${host}]` : host;
+	return `${formattedHost}:${port}`;
 }
 
 function extractTraceField(text, field) {
@@ -546,13 +695,6 @@ function countBy(items, field) {
 	}, {});
 }
 
-function countValues(items) {
-	return items.reduce((acc, item) => {
-		acc[item] = (acc[item] || 0) + 1;
-		return acc;
-	}, {});
-}
-
 function sourceHost(url) {
 	try {
 		return new URL(url).hostname;
@@ -567,6 +709,19 @@ function safeDecode(value) {
 	} catch {
 		return String(value || '');
 	}
+}
+
+function parseJson(text) {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return null;
+	}
+}
+
+function numberOrNull(value) {
+	const number = Number(value);
+	return Number.isFinite(number) ? number : null;
 }
 
 function parseArgs(argv) {
