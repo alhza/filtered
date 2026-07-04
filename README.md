@@ -21,18 +21,19 @@ https://raw.githubusercontent.com/alhza/filtered/main/filtered-best-nodes.txt
 ## Local Run
 
 ```powershell
-node .\cf-filter-local.mjs --limit 100 --scan 5000 --concurrency 120 --timeout 1600 --max-tcp 800
+node .\cf-filter-local.mjs --limit 150 --scan 5000 --concurrency 120 --timeout 1600 --max-tcp 800 --min-speed 10
 ```
 
 Useful options:
 
 ```text
---limit 100
+--limit 150
 --scan 5000
 --countries HK,JP,SG,TW,US,KR,DE,NL,GB,FR
 --ports 443,8443,2053,2083,2087,2096
 --balanced 1
 --max-tcp 800
+--min-speed 10
 ```
 
 ## Upstreams

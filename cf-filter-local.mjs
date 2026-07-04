@@ -17,10 +17,11 @@ const DEFAULT_PORTS = ['443', '8443', '2053', '2083', '2087', '2096'];
 
 const args = parseArgs(process.argv.slice(2));
 const options = {
-	limit: numberArg(args.limit, 100),
+	limit: numberArg(args.limit, 150),
 	scan: numberArg(args.scan, 4000),
 	connectTimeout: numberArg(args.timeout, 1600),
 	maxTcp: numberArg(args.maxTcp ?? args['max-tcp'], 800),
+	minKeepSpeed: numberArg(args.minSpeed ?? args['min-speed'], 10),
 	concurrency: numberArg(args.concurrency, 120),
 	countries: listArg(args.countries, DEFAULT_COUNTRIES, true),
 	ports: listArg(args.ports, DEFAULT_PORTS, false),
@@ -33,14 +34,10 @@ const startedAt = Date.now();
 const fetched = await fetchSources(MASTER_APIS);
 const parsed = dedupeCandidates(fetched.flatMap(({ url, text, sourceIndex }) => parseSource(text, url, sourceIndex)));
 const scoped = applyStaticFilters(parsed, options);
-const queue = options.balanced
-	? balancedTake(groupAndSort(scoped, compareCandidateScore), Math.max(options.scan, options.limit), options.countries)
-	: [...scoped].sort(compareCandidateScore).slice(0, Math.max(options.scan, options.limit));
+const queue = selectCheckQueue(scoped, options);
 const checked = await checkCandidates(queue, options);
 const usable = checked.filter(item => item.ok && item.checkMs <= options.maxTcp);
-const selected = options.balanced
-	? balancedTake(groupAndSort(usable, compareCheckedScore), options.limit, options.countries)
-	: usable.sort(compareCheckedScore).slice(0, options.limit);
+const selected = selectFinalNodes(usable, options);
 
 await fs.writeFile(options.out, selected.map(formatNodeLine).join('\n') + (selected.length ? '\n' : ''), 'utf8');
 await fs.writeFile(options.json, JSON.stringify({
@@ -61,6 +58,9 @@ await fs.writeFile(options.json, JSON.stringify({
 		checked: checked.length,
 		usable: usable.length,
 		selected: selected.length,
+		highSpeedQueued: queue.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
+		highSpeedUsable: usable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
+		highSpeedSelected: selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
 		countryDistribution: countBy(selected, 'country'),
 		portDistribution: countBy(selected, 'port'),
 	},
@@ -68,6 +68,7 @@ await fs.writeFile(options.json, JSON.stringify({
 }, null, 2), 'utf8');
 
 console.log(`parsed=${parsed.length} scoped=${scoped.length} queued=${queue.length} checked=${checked.length} usable=${usable.length} selected=${selected.length}`);
+console.log(`highSpeed>${options.minKeepSpeed}Mbps queued=${queue.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} usable=${usable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} selected=${selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length}`);
 console.log(`countries=${JSON.stringify(countBy(selected, 'country'))}`);
 console.log(`ports=${JSON.stringify(countBy(selected, 'port'))}`);
 console.log(`wrote ${options.out}`);
@@ -194,6 +195,39 @@ function checkTcp(candidate, timeoutMs) {
 	});
 }
 
+function selectCheckQueue(candidates, options) {
+	const targetSize = Math.max(options.scan, options.limit);
+	const selected = new Map();
+	const highSpeed = candidates
+		.filter(item => isHighSpeed(item, options.minKeepSpeed))
+		.sort(compareCandidateScore);
+	for (const item of highSpeed) selected.set(candidateKey(item), item);
+
+	const rest = candidates.filter(item => !selected.has(candidateKey(item)));
+	const fillLimit = Math.max(0, targetSize - selected.size);
+	const fill = options.balanced
+		? balancedTake(groupAndSort(rest, compareCandidateScore), fillLimit, options.countries)
+		: rest.sort(compareCandidateScore).slice(0, fillLimit);
+	for (const item of fill) selected.set(candidateKey(item), item);
+	return [...selected.values()];
+}
+
+function selectFinalNodes(candidates, options) {
+	const selected = new Map();
+	const highSpeed = candidates
+		.filter(item => isHighSpeed(item, options.minKeepSpeed))
+		.sort(compareCheckedScore);
+	for (const item of highSpeed) selected.set(candidateKey(item), item);
+
+	const rest = candidates.filter(item => !selected.has(candidateKey(item)));
+	const fillLimit = Math.max(0, options.limit - selected.size);
+	const fill = options.balanced
+		? balancedTake(groupAndSort(rest, compareCheckedScore), fillLimit, options.countries)
+		: rest.sort(compareCheckedScore).slice(0, fillLimit);
+	for (const item of fill) selected.set(candidateKey(item), item);
+	return [...selected.values()];
+}
+
 function groupAndSort(items, compareFn) {
 	const groups = new Map();
 	for (const item of items) {
@@ -224,6 +258,14 @@ function balancedTake(groups, limit, preferredCountries) {
 		cursor++;
 	}
 	return result;
+}
+
+function isHighSpeed(item, threshold) {
+	return Number.isFinite(item.speedMbps) && item.speedMbps > threshold;
+}
+
+function candidateKey(item) {
+	return `${item.host}:${item.port}`;
 }
 
 function compareCandidateScore(a, b) {

@@ -3,7 +3,7 @@ name: Filter Nodes
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 */3 * * *"
 
 permissions:
   contents: write
@@ -25,11 +25,12 @@ jobs:
       - name: Filter high-speed balanced nodes
         run: |
           node cf-filter-local.mjs \
-            --limit 100 \
+            --limit 150 \
             --scan 5000 \
             --concurrency 120 \
             --timeout 1600 \
             --max-tcp 800 \
+            --min-speed 10 \
             --out filtered-best-nodes.txt \
             --json filtered-best-nodes.json
 
