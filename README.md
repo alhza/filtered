@@ -42,6 +42,13 @@ Useful options:
 https://ips.gaoji.uk/best_ips.txt
 https://raw.githubusercontent.com/svip-s/cloudflare_ip/refs/heads/main/best_ips.txt
 https://raw.githubusercontent.com/love-ztm/cfip/refs/heads/main/best_ips.txt
+https://raw.githubusercontent.com/gshtwy/CF-DNS-Clone/main/wetest-cloudflare-v4.txt
+https://raw.githubusercontent.com/yuanxiawan/cfipv4db/main/cfip.txt
+https://raw.githubusercontent.com/joname1/BestCFip/main/ipv4.txt
+https://raw.githubusercontent.com/Senflare/Senflare-IP/main/IPlist-Pro.txt
+https://raw.githubusercontent.com/einsitang/my-fast-cf-ip/master/fastips.txt
+https://raw.githubusercontent.com/hubbylei/bestcf/main/bestcf.txt
+https://raw.githubusercontent.com/ymyuuu/IPDB/main/BestCF/bestcfv4.txt
 https://bestcf.pages.dev/uouin/all.txt
 https://zip.cm.edu.kg/all.txt
 ```

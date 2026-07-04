@@ -5,6 +5,13 @@ const MASTER_APIS = [
 	'https://ips.gaoji.uk/best_ips.txt',
 	'https://raw.githubusercontent.com/svip-s/cloudflare_ip/refs/heads/main/best_ips.txt',
 	'https://raw.githubusercontent.com/love-ztm/cfip/refs/heads/main/best_ips.txt',
+	'https://raw.githubusercontent.com/gshtwy/CF-DNS-Clone/main/wetest-cloudflare-v4.txt',
+	'https://raw.githubusercontent.com/yuanxiawan/cfipv4db/main/cfip.txt',
+	'https://raw.githubusercontent.com/joname1/BestCFip/main/ipv4.txt',
+	'https://raw.githubusercontent.com/Senflare/Senflare-IP/main/IPlist-Pro.txt',
+	'https://raw.githubusercontent.com/einsitang/my-fast-cf-ip/master/fastips.txt',
+	'https://raw.githubusercontent.com/hubbylei/bestcf/main/bestcf.txt',
+	'https://raw.githubusercontent.com/ymyuuu/IPDB/main/BestCF/bestcfv4.txt',
 	'https://bestcf.pages.dev/uouin/all.txt',
 	'https://zip.cm.edu.kg/all.txt',
 ];
@@ -14,6 +21,16 @@ const DEFAULT_COUNTRIES = [
 	'CH', 'PL', 'LV', 'CA', 'AU', 'RU', 'TH', 'MY', 'VN', 'IN',
 ];
 const DEFAULT_PORTS = ['443', '8443', '2053', '2083', '2087', '2096'];
+
+const COLO_COUNTRY = {
+	HKG: 'HK', NRT: 'JP', KIX: 'JP', FUK: 'JP', SIN: 'SG', TPE: 'TW', ICN: 'KR',
+	SJC: 'US', LAX: 'US', SEA: 'US', DFW: 'US', IAD: 'US', EWR: 'US', ORD: 'US', MIA: 'US', ATL: 'US', DEN: 'US',
+	FRA: 'DE', MUC: 'DE', HAM: 'DE', AMS: 'NL', LHR: 'GB', MAN: 'GB', CDG: 'FR', MRS: 'FR',
+	HEL: 'FI', ARN: 'SE', ZRH: 'CH', GVA: 'CH', WAW: 'PL', RIX: 'LV',
+	YYZ: 'CA', YVR: 'CA', YUL: 'CA', SYD: 'AU', MEL: 'AU', BNE: 'AU', PER: 'AU',
+	DME: 'RU', SVO: 'RU', LED: 'RU', BKK: 'TH', KUL: 'MY', SGN: 'VN', HAN: 'VN',
+	BLR: 'IN', BOM: 'IN', DEL: 'IN', MAA: 'IN', CCU: 'IN', HYD: 'IN',
+};
 
 const args = parseArgs(process.argv.slice(2));
 const options = {
@@ -37,7 +54,11 @@ const parsed = dedupeCandidates(fetched.flatMap(({ url, text, sourceIndex }) => 
 const scoped = applyStaticFilters(parsed, options);
 const queue = selectCheckQueue(scoped, options);
 const checked = await checkCandidates(queue, options);
-const usable = checked.filter(item => item.ok && item.probeMs <= options.maxProbe);
+const usable = checked.filter(item => {
+	const countrySet = new Set(options.countries);
+	const countryOk = countrySet.size === 0 || countrySet.has(item.country);
+	return item.ok && item.probeMs <= options.maxProbe && countryOk;
+});
 const selected = selectFinalNodes(usable, options);
 
 await fs.writeFile(options.out, selected.map(formatNodeLine).join('\n') + (selected.length ? '\n' : ''), 'utf8');
@@ -77,9 +98,22 @@ console.log(`wrote ${options.json}`);
 console.log(selected.slice(0, 12).map(formatNodeLine).join('\n'));
 
 async function fetchSources(urls) {
-	const results = await Promise.allSettled(urls.map(async (url, sourceIndex) => {
+	const results = new Array(urls.length);
+	let index = 0;
+	const workers = Array.from({ length: 4 }, async () => {
+		while (index < urls.length) {
+			const sourceIndex = index++;
+			results[sourceIndex] = await fetchSource(urls[sourceIndex], sourceIndex);
+		}
+	});
+	await Promise.all(workers);
+	return results;
+}
+
+async function fetchSource(url, sourceIndex) {
+	for (let attempt = 1; attempt <= 2; attempt++) {
 		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), 20000);
+		const timer = setTimeout(() => controller.abort(), 45000);
 		try {
 			const response = await fetch(url, {
 				signal: controller.signal,
@@ -87,22 +121,21 @@ async function fetchSources(urls) {
 			});
 			const text = response.ok ? await response.text() : '';
 			return { url, sourceIndex, ok: response.ok, status: response.status, text };
+		} catch (error) {
+			if (attempt === 2) {
+				return {
+					url,
+					sourceIndex,
+					ok: false,
+					status: 0,
+					text: '',
+					error: error?.message || String(error),
+				};
+			}
 		} finally {
 			clearTimeout(timer);
 		}
-	}));
-
-	return results.map((result, sourceIndex) => {
-		if (result.status === 'fulfilled') return result.value;
-		return {
-			url: urls[sourceIndex],
-			sourceIndex,
-			ok: false,
-			status: 0,
-			text: '',
-			error: result.reason?.message || String(result.reason),
-		};
-	});
+	}
 }
 
 function parseSource(text, sourceUrl, sourceIndex) {
@@ -119,11 +152,12 @@ function parseLine(rawLine, sourceUrl, sourceIndex) {
 	if (!line || line.startsWith('#') || line.startsWith('//')) return null;
 
 	const match = line.match(/^(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+):(\d{2,5})(?:#(.+))?/);
-	if (!match) return null;
+	const ipOnlyMatch = match ? null : line.match(/^((?:\d{1,3}\.){3}\d{1,3}|\[[0-9a-fA-F:]+\]|[0-9a-fA-F:]{6,})(?:#(.+))?$/);
+	if (!match && !ipOnlyMatch) return null;
 
-	const host = match[1].replace(/^\[|\]$/g, '');
-	const port = match[2];
-	const remark = safeDecode(match[3] || '');
+	const host = (match ? match[1] : ipOnlyMatch[1]).replace(/^\[|\]$/g, '');
+	const port = match ? match[2] : '443';
+	const remark = safeDecode((match ? match[3] : ipOnlyMatch[2]) || '');
 	const country = extractCountry(remark);
 	const metrics = extractMetrics(remark);
 
@@ -154,7 +188,7 @@ function applyStaticFilters(candidates, { countries, ports }) {
 	const countrySet = new Set(countries);
 	const portSet = new Set(ports.map(String));
 	return candidates.filter(item => {
-		const countryOk = countrySet.size === 0 || countrySet.has(item.country);
+		const countryOk = countrySet.size === 0 || !item.country || countrySet.has(item.country);
 		const portOk = portSet.size === 0 || portSet.has(item.port);
 		return countryOk && portOk;
 	});
@@ -189,11 +223,13 @@ function checkCloudflareTrace(candidate, timeoutMs, probeHost) {
 			if (finished) return;
 			finished = true;
 			socket.destroy();
+			const cfColo = extractTraceField(responseText, 'colo');
 			resolve({
 				...candidate,
 				ok,
 				probeMs: Date.now() - start,
-				cfColo: extractTraceField(responseText, 'colo'),
+				country: candidate.country || COLO_COUNTRY[cfColo] || '',
+				cfColo,
 				cfIp: extractTraceField(responseText, 'ip'),
 				error,
 			});
