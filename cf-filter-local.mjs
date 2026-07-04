@@ -314,13 +314,11 @@ function scoreCandidate(item) {
 }
 
 function formatNodeLine(item) {
-	const tags = [];
-	if (item.country) tags.push(item.country);
-	if (Number.isFinite(item.latencyMs)) tags.push(`${Math.round(item.latencyMs)}ms`);
-	if (Number.isFinite(item.speedMbps)) tags.push(`${Math.round(item.speedMbps)}Mbps`);
-	if (item.cfColo) tags.push(item.cfColo);
-	tags.push(`cf${item.probeMs}ms`);
-	return `${item.host}:${item.port}#${tags.join(' ')}`;
+	const country = item.country || 'ZZ';
+	const colo = item.cfColo || 'UNK';
+	const speed = Number.isFinite(item.speedMbps) ? `${Math.round(item.speedMbps)}M` : 'NA';
+	const probe = Number.isFinite(item.probeMs) ? `CF${Math.round(item.probeMs)}` : 'CFNA';
+	return `${item.host}:${item.port}#${country}-${colo}-${speed}-${probe}`;
 }
 
 function extractTraceField(text, field) {
