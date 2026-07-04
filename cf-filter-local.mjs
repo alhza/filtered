@@ -40,7 +40,12 @@ const options = {
 	maxProbe: numberArg(args.maxProbe ?? args['max-probe'] ?? args.maxTcp ?? args['max-tcp'], 1200),
 	minKeepSpeed: numberArg(args.minSpeed ?? args['min-speed'], 10),
 	probeHost: args.probeHost || args['probe-host'] || 'speed.cloudflare.com',
+	speedTest: args.speedTest !== '0' && args['speed-test'] !== '0',
+	speedScan: numberArg(args.speedScan ?? args['speed-scan'], 300),
+	speedBytes: numberArg(args.speedBytes ?? args['speed-bytes'], 1024 * 1024),
+	speedTimeout: numberArg(args.speedTimeout ?? args['speed-timeout'], 6000),
 	concurrency: numberArg(args.concurrency, 120),
+	speedConcurrency: numberArg(args.speedConcurrency ?? args['speed-concurrency'], 8),
 	countries: listArg(args.countries, DEFAULT_COUNTRIES, true),
 	ports: listArg(args.ports, DEFAULT_PORTS, false),
 	balanced: args.balanced !== '0',
@@ -59,7 +64,10 @@ const usable = checked.filter(item => {
 	const countryOk = countrySet.size === 0 || countrySet.has(item.country);
 	return item.ok && item.probeMs <= options.maxProbe && countryOk;
 });
-const selected = selectFinalNodes(usable, options);
+const speedQueue = options.speedTest ? selectSpeedQueue(usable, options) : usable;
+const measured = options.speedTest ? await speedTestCandidates(speedQueue, options) : usable;
+const speedUsable = options.speedTest ? measured.filter(item => Number.isFinite(item.localSpeedMbps)) : measured;
+const selected = selectFinalNodes(speedUsable, options);
 
 await fs.writeFile(options.out, selected.map(formatNodeLine).join('\n') + (selected.length ? '\n' : ''), 'utf8');
 await fs.writeFile(options.json, JSON.stringify({
@@ -79,9 +87,12 @@ await fs.writeFile(options.json, JSON.stringify({
 		queued: queue.length,
 		checked: checked.length,
 		usable: usable.length,
+		speedQueued: speedQueue.length,
+		speedTested: measured.length,
+		speedUsable: speedUsable.length,
 		selected: selected.length,
 		highSpeedQueued: queue.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
-		highSpeedUsable: usable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
+		highSpeedUsable: speedUsable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
 		highSpeedSelected: selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
 		countryDistribution: countBy(selected, 'country'),
 		portDistribution: countBy(selected, 'port'),
@@ -89,8 +100,8 @@ await fs.writeFile(options.json, JSON.stringify({
 	nodes: selected,
 }, null, 2), 'utf8');
 
-console.log(`parsed=${parsed.length} scoped=${scoped.length} queued=${queue.length} checked=${checked.length} usable=${usable.length} selected=${selected.length}`);
-console.log(`highSpeed>${options.minKeepSpeed}Mbps queued=${queue.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} usable=${usable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} selected=${selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length}`);
+console.log(`parsed=${parsed.length} scoped=${scoped.length} queued=${queue.length} checked=${checked.length} usable=${usable.length} speedQueued=${speedQueue.length} speedUsable=${speedUsable.length} selected=${selected.length}`);
+console.log(`highSpeed>${options.minKeepSpeed}Mbps queued=${queue.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} usable=${speedUsable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} selected=${selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length}`);
 console.log(`countries=${JSON.stringify(countBy(selected, 'country'))}`);
 console.log(`ports=${JSON.stringify(countBy(selected, 'port'))}`);
 console.log(`wrote ${options.out}`);
@@ -228,7 +239,7 @@ function checkCloudflareTrace(candidate, timeoutMs, probeHost) {
 				...candidate,
 				ok,
 				probeMs: Date.now() - start,
-				country: candidate.country || COLO_COUNTRY[cfColo] || '',
+				country: COLO_COUNTRY[cfColo] || candidate.country || '',
 				cfColo,
 				cfIp: extractTraceField(responseText, 'ip'),
 				error,
@@ -285,6 +296,92 @@ function selectFinalNodes(candidates, options) {
 	return [...selected.values()];
 }
 
+function selectSpeedQueue(candidates, options) {
+	const targetSize = Math.max(options.speedScan, options.limit);
+	const selected = new Map();
+	const highSpeed = candidates
+		.filter(item => isHighSpeed(item, options.minKeepSpeed))
+		.sort(compareCheckedScore);
+	for (const item of highSpeed) selected.set(candidateKey(item), item);
+
+	const rest = candidates.filter(item => !selected.has(candidateKey(item)));
+	const fillLimit = Math.max(0, targetSize - selected.size);
+	const fill = options.balanced
+		? balancedTake(groupAndSort(rest, compareCheckedScore), fillLimit, options.countries)
+		: rest.sort(compareCheckedScore).slice(0, fillLimit);
+	for (const item of fill) selected.set(candidateKey(item), item);
+	return [...selected.values()];
+}
+
+async function speedTestCandidates(candidates, { speedConcurrency, speedTimeout, speedBytes, probeHost }) {
+	const results = [];
+	let index = 0;
+	const workers = Array.from({ length: Math.max(1, speedConcurrency) }, async () => {
+		while (index < candidates.length) {
+			const item = candidates[index++];
+			results.push(await testDownloadSpeed(item, speedTimeout, speedBytes, probeHost));
+		}
+	});
+	await Promise.all(workers);
+	return results;
+}
+
+function testDownloadSpeed(candidate, timeoutMs, bytes, probeHost) {
+	return new Promise(resolve => {
+		const start = Date.now();
+		const socket = tls.connect({
+			host: candidate.host,
+			port: Number(candidate.port),
+			servername: probeHost,
+			rejectUnauthorized: false,
+			ALPNProtocols: ['http/1.1'],
+		});
+		let bodyBytes = 0;
+		let bodyStartAt = 0;
+		let headerDone = false;
+		let buffer = Buffer.alloc(0);
+		let finished = false;
+		const done = (ok, error = null) => {
+			if (finished) return;
+			finished = true;
+			socket.destroy();
+			const elapsedMs = Math.max(1, Date.now() - (bodyStartAt || start));
+			const localSpeedMbps = ok ? (bodyBytes * 8) / elapsedMs / 1000 : null;
+			resolve({
+				...candidate,
+				speedOk: ok,
+				speedMs: elapsedMs,
+				speedBytes: bodyBytes,
+				localSpeedMbps,
+				speedError: error,
+			});
+		};
+		socket.setTimeout(timeoutMs);
+		socket.once('secureConnect', () => {
+			socket.write(`GET /__down?bytes=${bytes} HTTP/1.1\r\nHost: ${probeHost}\r\nUser-Agent: filtered-cf-nodes/1.0\r\nConnection: close\r\n\r\n`);
+		});
+		socket.on('data', chunk => {
+			if (headerDone) {
+				if (!bodyStartAt) bodyStartAt = Date.now();
+				bodyBytes += chunk.length;
+			} else {
+				buffer = Buffer.concat([buffer, chunk]);
+				const headerEnd = buffer.indexOf('\r\n\r\n');
+				if (headerEnd !== -1) {
+					headerDone = true;
+					bodyStartAt = Date.now();
+					bodyBytes += buffer.length - headerEnd - 4;
+					buffer = null;
+				}
+			}
+			if (bodyBytes >= bytes) done(true);
+		});
+		socket.once('end', () => done(bodyBytes > 0, bodyBytes > 0 ? null : 'no-download-body'));
+		socket.once('timeout', () => done(bodyBytes > 0, bodyBytes > 0 ? null : 'speed-timeout'));
+		socket.once('error', error => done(false, error.code || error.message));
+	});
+}
+
 function groupAndSort(items, compareFn) {
 	const groups = new Map();
 	for (const item of items) {
@@ -318,7 +415,7 @@ function balancedTake(groups, limit, preferredCountries) {
 }
 
 function isHighSpeed(item, threshold) {
-	return Number.isFinite(item.speedMbps) && item.speedMbps > threshold;
+	return measuredSpeedMbps(item) > threshold;
 }
 
 function candidateKey(item) {
@@ -340,7 +437,7 @@ function scoreChecked(item) {
 }
 
 function scoreCandidate(item) {
-	const speed = Number.isFinite(item.speedMbps) ? item.speedMbps : 0;
+	const speed = measuredSpeedMbps(item);
 	const latency = Number.isFinite(item.latencyMs) ? item.latencyMs : 9999;
 	const countryBonus = DEFAULT_COUNTRIES.includes(item.country) ? 240 - DEFAULT_COUNTRIES.indexOf(item.country) * 6 : 0;
 	const portBonus = DEFAULT_PORTS.includes(item.port) ? 120 - DEFAULT_PORTS.indexOf(item.port) * 8 : 0;
@@ -352,9 +449,21 @@ function scoreCandidate(item) {
 function formatNodeLine(item) {
 	const country = item.country || 'ZZ';
 	const colo = item.cfColo || 'UNK';
-	const speed = Number.isFinite(item.speedMbps) ? `${Math.round(item.speedMbps)}M` : 'NA';
+	const speed = Number.isFinite(item.localSpeedMbps) ? formatSpeed(item.localSpeedMbps) : (Number.isFinite(item.speedMbps) ? formatSpeed(item.speedMbps) : 'NA');
 	const probe = Number.isFinite(item.probeMs) ? `CF${Math.round(item.probeMs)}` : 'CFNA';
 	return `${item.host}:${item.port}#${country}-${colo}-${speed}-${probe}`;
+}
+
+function measuredSpeedMbps(item) {
+	if (Number.isFinite(item.localSpeedMbps)) return item.localSpeedMbps;
+	if (Number.isFinite(item.speedMbps)) return item.speedMbps;
+	return 0;
+}
+
+function formatSpeed(value) {
+	if (!Number.isFinite(value)) return 'NA';
+	if (value >= 10) return `${Math.round(value)}M`;
+	return `${Math.max(0.1, Math.round(value * 10) / 10)}M`;
 }
 
 function extractTraceField(text, field) {
