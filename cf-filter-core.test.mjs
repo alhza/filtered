@@ -42,6 +42,25 @@ test('selectFinalNodes caps the result without filling from slow nodes', () => {
 	assert.deepEqual(selected.map(item => item.host), ['fast-1', 'fast-2']);
 });
 
+test('selectFinalNodes fills from fallback speed tier without using very slow nodes', () => {
+	const nodes = [
+		node('fast-1', 'US', 30, 30),
+		node('fallback-1', 'HK', 8, 20),
+		node('fallback-2', 'JP', 5, 15),
+		node('too-slow', 'SG', 4.99, 10),
+	];
+
+	const selected = selectFinalNodes(nodes, {
+		limit: 4,
+		minKeepSpeed: 10,
+		fallbackMinSpeed: 5,
+		balanced: true,
+		countries: ['US', 'HK', 'JP', 'SG'],
+	});
+
+	assert.deepEqual(selected.map(item => item.host), ['fast-1', 'fallback-1', 'fallback-2']);
+});
+
 test('calculateLocalSpeedMbps rejects burst samples that finish too quickly', () => {
 	const speed = calculateLocalSpeedMbps({
 		bodyBytes: 1_048_680,

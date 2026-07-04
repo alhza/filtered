@@ -99,12 +99,14 @@ const COUNTRY_LABELS = {
 const DEFAULT_COUNTRIES = Object.keys(COUNTRY_LABELS);
 
 const args = parseArgs(process.argv.slice(2));
+const minKeepSpeed = numberArg(args.minSpeed ?? args['min-speed'], 10);
 const options = {
 	limit: numberArg(args.limit, 150),
 	scan: numberArg(args.scan, 4000),
 	connectTimeout: numberArg(args.timeout, 1600),
 	maxProbe: numberArg(args.maxProbe ?? args['max-probe'] ?? args.maxTcp ?? args['max-tcp'], 1200),
-	minKeepSpeed: numberArg(args.minSpeed ?? args['min-speed'], 10),
+	minKeepSpeed,
+	fallbackMinSpeed: numberArg(args.fallbackMinSpeed ?? args['fallback-min-speed'], minKeepSpeed),
 	probeHost: args.probeHost || args['probe-host'] || 'speed.cloudflare.com',
 	speedTest: args.speedTest !== '0' && args['speed-test'] !== '0',
 	speedScan: numberArg(args.speedScan ?? args['speed-scan'], 200),
@@ -171,6 +173,7 @@ function buildStats({ parsed, scoped, queue, checked, usable, speedQueue, measur
 		highSpeedQueued: queue.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
 		highSpeedUsable: speedUsable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
 		highSpeedSelected: selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
+		fallbackSpeedSelected: selected.filter(item => !isHighSpeed(item, options.minKeepSpeed) && isHighSpeed(item, options.fallbackMinSpeed)).length,
 		countryDistribution: countBy(selected, 'country'),
 		portDistribution: countBy(selected, 'port'),
 	};
@@ -191,6 +194,7 @@ function formatSourceSummary(item) {
 function printSummary({ parsed, scoped, queue, checked, usable, speedQueue, speedUsable, selected, options }) {
 	console.log(`parsed=${parsed.length} scoped=${scoped.length} queued=${queue.length} checked=${checked.length} usable=${usable.length} speedQueued=${speedQueue.length} speedUsable=${speedUsable.length} selected=${selected.length}`);
 	console.log(`highSpeed>${options.minKeepSpeed}Mbps queued=${queue.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} usable=${speedUsable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} selected=${selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length}`);
+	console.log(`fallback>=${options.fallbackMinSpeed}Mbps selected=${selected.filter(item => !isHighSpeed(item, options.minKeepSpeed) && isHighSpeed(item, options.fallbackMinSpeed)).length}`);
 	console.log(`countries=${JSON.stringify(countBy(selected, 'country'))}`);
 	console.log(`ports=${JSON.stringify(countBy(selected, 'port'))}`);
 	console.log(`wrote ${options.out}`);

@@ -22,6 +22,7 @@ export function selectFinalNodes(candidates, options) {
 		targetSize: options.limit,
 		maxSize: options.limit,
 		minKeepSpeed: options.minKeepSpeed,
+		fallbackMinSpeed: options.fallbackMinSpeed ?? options.minKeepSpeed,
 		strictMinSpeed: options.strictMinSpeed !== false,
 		balanced: options.balanced,
 		countries: options.countries,
@@ -29,7 +30,7 @@ export function selectFinalNodes(candidates, options) {
 	});
 }
 
-export function selectPriorityFill(candidates, { targetSize, minKeepSpeed, balanced, countries, compareFn, maxSize = Infinity, strictMinSpeed = false }) {
+export function selectPriorityFill(candidates, { targetSize, minKeepSpeed, fallbackMinSpeed = minKeepSpeed, balanced, countries, compareFn, maxSize = Infinity, strictMinSpeed = false }) {
 	const selected = new Map();
 	const highSpeed = candidates
 		.filter(item => isHighSpeed(item, minKeepSpeed))
@@ -40,9 +41,10 @@ export function selectPriorityFill(candidates, { targetSize, minKeepSpeed, balan
 		selected.set(candidateKey(item), item);
 	}
 
-	if (strictMinSpeed) return [...selected.values()];
+	const fillThreshold = strictMinSpeed ? Math.max(0, fallbackMinSpeed) : 0;
+	if (selected.size >= Math.min(targetSize, maxSize)) return [...selected.values()];
 
-	const rest = candidates.filter(item => !selected.has(candidateKey(item)));
+	const rest = candidates.filter(item => !selected.has(candidateKey(item)) && isHighSpeed(item, fillThreshold));
 	const fillLimit = Math.max(0, Math.min(targetSize, maxSize) - selected.size);
 	const fill = balanced
 		? balancedTake(groupAndSort(rest, compareFn), fillLimit, countries)

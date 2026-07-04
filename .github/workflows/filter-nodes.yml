@@ -39,6 +39,7 @@ jobs:
             --speed-timeout 8000 \
             --min-speed-ms 50 \
             --min-speed 10 \
+            --fallback-min-speed 5 \
             --out filtered-best-nodes.txt \
             --json filtered-best-nodes.json
 
