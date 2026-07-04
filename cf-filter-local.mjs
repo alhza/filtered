@@ -36,6 +36,31 @@ const COLO_COUNTRY = {
 	BLR: 'IN', BOM: 'IN', DEL: 'IN', MAA: 'IN', CCU: 'IN', HYD: 'IN',
 };
 
+const COUNTRY_LABELS = {
+	HK: '香港',
+	JP: '日本',
+	SG: '新加坡',
+	TW: '台湾',
+	US: '美国',
+	KR: '韩国',
+	DE: '德国',
+	NL: '荷兰',
+	GB: '英国',
+	FR: '法国',
+	FI: '芬兰',
+	SE: '瑞典',
+	CH: '瑞士',
+	PL: '波兰',
+	LV: '拉脱维亚',
+	CA: '加拿大',
+	AU: '澳大利亚',
+	RU: '俄罗斯',
+	TH: '泰国',
+	MY: '马来西亚',
+	VN: '越南',
+	IN: '印度',
+};
+
 const args = parseArgs(process.argv.slice(2));
 const options = {
 	limit: numberArg(args.limit, 150),
@@ -464,7 +489,7 @@ function formatNodeLines(items) {
 }
 
 function formatNodeLabel(item) {
-	const country = item.country || 'ZZ';
+	const country = COUNTRY_LABELS[item.country] || item.country || '未知';
 	const speed = Number.isFinite(item.localSpeedMbps) ? formatSpeed(item.localSpeedMbps) : (Number.isFinite(item.speedMbps) ? formatSpeed(item.speedMbps) : 'NA');
 	return `${country}-${speed}`;
 }

@@ -21,8 +21,11 @@ https://raw.githubusercontent.com/alhza/filtered/main/filtered-best-nodes.txt
 Line format:
 
 ```text
-IP:PORT#COUNTRY-LOCAL_DOWNLOAD_Mbps
+IP:PORT#中文国家-LOCAL_DOWNLOAD_Mbps
 ```
+
+Only country and local download speed are shown in the node name. Duplicate
+country-speed labels may include a numeric suffix such as `-01`.
 
 Selection priority:
 
