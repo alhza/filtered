@@ -25,7 +25,7 @@ jobs:
       - name: Filter high-speed balanced nodes
         run: |
           node cf-filter-local.mjs \
-            --limit 80 \
+            --limit 150 \
             --scan 5000 \
             --concurrency 120 \
             --timeout 2500 \

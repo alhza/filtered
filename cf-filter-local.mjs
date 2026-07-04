@@ -38,7 +38,7 @@ const COLO_COUNTRY = {
 
 const args = parseArgs(process.argv.slice(2));
 const options = {
-	limit: numberArg(args.limit, 80),
+	limit: numberArg(args.limit, 150),
 	scan: numberArg(args.scan, 4000),
 	connectTimeout: numberArg(args.timeout, 1600),
 	maxProbe: numberArg(args.maxProbe ?? args['max-probe'] ?? args.maxTcp ?? args['max-tcp'], 1200),

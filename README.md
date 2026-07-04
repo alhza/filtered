@@ -27,13 +27,13 @@ IP:PORT#COUNTRY-LOCAL_DOWNLOAD_Mbps
 ## Local Run
 
 ```powershell
-node .\cf-filter-local.mjs --limit 80 --scan 5000 --concurrency 120 --timeout 2500 --max-probe 1800 --speed-scan 200 --speed-bytes 1048576 --speed-concurrency 8 --speed-timeout 8000 --min-speed 10
+node .\cf-filter-local.mjs --limit 150 --scan 5000 --concurrency 120 --timeout 2500 --max-probe 1800 --speed-scan 200 --speed-bytes 1048576 --speed-concurrency 8 --speed-timeout 8000 --min-speed 10
 ```
 
 Useful options:
 
 ```text
---limit 80
+--limit 150
 --scan 5000
 --countries HK,JP,SG,TW,US,KR,DE,NL,GB,FR
 --ports 443,8443,2053,2083,2087,2096
