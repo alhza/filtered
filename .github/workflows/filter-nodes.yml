@@ -22,6 +22,9 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Run offline unit tests
+        run: node --test ./cf-filter-core.test.mjs
+
       - name: Filter high-speed balanced nodes
         run: |
           node cf-filter-local.mjs \
@@ -34,6 +37,7 @@ jobs:
             --speed-bytes 1048576 \
             --speed-concurrency 8 \
             --speed-timeout 8000 \
+            --min-speed-ms 50 \
             --min-speed 10 \
             --out filtered-best-nodes.txt \
             --json filtered-best-nodes.json

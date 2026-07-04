@@ -27,15 +27,16 @@ IP:PORT#中文国家-LOCAL_DOWNLOAD_Mbps
 Selection priority:
 
 ```text
-1. Keep every reachable node with local download speed > 10Mbps.
-2. Fill the remaining slots up to 150 by balanced country rotation.
-3. Every final node must pass Cloudflare trace and local download test.
+1. Every final node must pass Cloudflare trace and local download test.
+2. Keep only nodes with trusted local download speed >= 10Mbps.
+3. Publish up to 150 nodes; do not fill the result with slower nodes.
+4. Ignore speed samples that finish too quickly to avoid burst-only scores.
 ```
 
 ## Local Run
 
 ```powershell
-node .\cf-filter-local.mjs --limit 150 --scan 5000 --concurrency 120 --timeout 2500 --max-probe 1800 --speed-scan 200 --speed-bytes 1048576 --speed-concurrency 8 --speed-timeout 8000 --min-speed 10
+node .\cf-filter-local.mjs --limit 150 --scan 5000 --concurrency 120 --timeout 2500 --max-probe 1800 --speed-scan 200 --speed-bytes 1048576 --speed-concurrency 8 --speed-timeout 8000 --min-speed-ms 50 --min-speed 10
 ```
 
 Useful options:
@@ -51,7 +52,18 @@ Useful options:
 --speed-bytes 1048576
 --speed-concurrency 8
 --speed-timeout 8000
+--min-speed-ms 50
 --min-speed 10
+--strict-min-speed 1
+```
+
+Notes:
+
+```text
+--limit is a maximum, not a target that must be filled.
+--strict-min-speed 1 prevents low-speed nodes from filling empty slots.
+--min-speed-ms discards very short download samples such as 1MiB in 8ms.
+The workflow uses a single download test per candidate to avoid repeated probing.
 ```
 
 ## Upstreams

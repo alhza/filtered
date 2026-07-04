@@ -1,5 +1,9 @@
 import fs from 'node:fs/promises';
 import tls from 'node:tls';
+import {
+	calculateLocalSpeedMbps,
+	selectFinalNodes as selectFinalNodesStrict,
+} from './cf-filter-core.mjs';
 
 const SOURCES = [
 	'https://ips.gaoji.uk/best_ips.txt',
@@ -106,11 +110,13 @@ const options = {
 	speedScan: numberArg(args.speedScan ?? args['speed-scan'], 200),
 	speedBytes: numberArg(args.speedBytes ?? args['speed-bytes'], 1024 * 1024),
 	speedTimeout: numberArg(args.speedTimeout ?? args['speed-timeout'], 6000),
+	minSpeedMs: numberArg(args.minSpeedMs ?? args['min-speed-ms'], 50),
 	concurrency: numberArg(args.concurrency, 120),
 	speedConcurrency: numberArg(args.speedConcurrency ?? args['speed-concurrency'], 8),
 	countries: listArg(args.countries, DEFAULT_COUNTRIES, true),
 	ports: listArg(args.ports, DEFAULT_PORTS, false),
 	balanced: args.balanced !== '0',
+	strictMinSpeed: args.strictMinSpeed !== '0' && args['strict-min-speed'] !== '0',
 	out: args.out || 'filtered-best-nodes.txt',
 	json: args.json || 'filtered-best-nodes.json',
 };
@@ -457,14 +463,7 @@ function filterUsableChecked(items, { countries, maxProbe }) {
 }
 
 function selectFinalNodes(candidates, options) {
-	return selectPriorityFill(candidates, {
-		targetSize: options.limit,
-		maxSize: options.limit,
-		minKeepSpeed: options.minKeepSpeed,
-		balanced: options.balanced,
-		countries: options.countries,
-		compareFn: compareCheckedScore,
-	});
+	return selectFinalNodesStrict(candidates, options);
 }
 
 function selectSpeedQueue(candidates, options) {
@@ -499,11 +498,11 @@ function selectPriorityFill(candidates, { targetSize, minKeepSpeed, balanced, co
 	return [...selected.values()];
 }
 
-async function speedTestCandidates(candidates, { speedConcurrency, speedTimeout, speedBytes, probeHost }) {
-	return mapConcurrent(candidates, speedConcurrency, item => testDownloadSpeed(item, speedTimeout, speedBytes, probeHost));
+async function speedTestCandidates(candidates, { speedConcurrency, speedTimeout, speedBytes, probeHost, minSpeedMs }) {
+	return mapConcurrent(candidates, speedConcurrency, item => testDownloadSpeed(item, speedTimeout, speedBytes, probeHost, minSpeedMs));
 }
 
-function testDownloadSpeed(candidate, timeoutMs, bytes, probeHost) {
+function testDownloadSpeed(candidate, timeoutMs, bytes, probeHost, minSpeedMs) {
 	return new Promise(resolve => {
 		const start = Date.now();
 		const socket = tls.connect({
@@ -523,14 +522,15 @@ function testDownloadSpeed(candidate, timeoutMs, bytes, probeHost) {
 			finished = true;
 			socket.destroy();
 			const elapsedMs = Math.max(1, Date.now() - (bodyStartAt || start));
-			const localSpeedMbps = ok ? (bodyBytes * 8) / elapsedMs / 1000 : null;
+			const localSpeedMbps = ok ? calculateLocalSpeedMbps({ bodyBytes, elapsedMs, minElapsedMs: minSpeedMs }) : null;
+			const speedOk = ok && Number.isFinite(localSpeedMbps);
 			resolve({
 				...candidate,
-				speedOk: ok,
+				speedOk,
 				speedMs: elapsedMs,
 				speedBytes: bodyBytes,
 				localSpeedMbps,
-				speedError: error,
+				speedError: speedOk ? error : (error || 'speed-sample-too-short'),
 			});
 		};
 		socket.setTimeout(timeoutMs);
@@ -592,7 +592,7 @@ function balancedTake(groups, limit, preferredCountries) {
 }
 
 function isHighSpeed(item, threshold) {
-	return measuredSpeedMbps(item) > threshold;
+	return measuredSpeedMbps(item) >= threshold;
 }
 
 function candidateKey(item) {
