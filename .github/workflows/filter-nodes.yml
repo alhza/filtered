@@ -42,6 +42,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          result_dir="$(mktemp -d)"
+          cp filtered-best-nodes.txt filtered-best-nodes.json "$result_dir/"
+          git fetch origin main
+          git reset --hard origin/main
+          cp "$result_dir/filtered-best-nodes.txt" "$result_dir/filtered-best-nodes.json" .
           git add filtered-best-nodes.txt filtered-best-nodes.json
           git diff --cached --quiet || git commit -m "chore: 更新优选节点"
           git push
