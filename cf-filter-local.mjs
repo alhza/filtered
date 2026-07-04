@@ -38,7 +38,7 @@ const COLO_COUNTRY = {
 
 const args = parseArgs(process.argv.slice(2));
 const options = {
-	limit: numberArg(args.limit, 150),
+	limit: numberArg(args.limit, 80),
 	scan: numberArg(args.scan, 4000),
 	connectTimeout: numberArg(args.timeout, 1600),
 	maxProbe: numberArg(args.maxProbe ?? args['max-probe'] ?? args.maxTcp ?? args['max-tcp'], 1200),
@@ -73,7 +73,7 @@ const measured = options.speedTest ? await speedTestCandidates(speedQueue, optio
 const speedUsable = options.speedTest ? measured.filter(item => Number.isFinite(item.localSpeedMbps)) : measured;
 const selected = selectFinalNodes(speedUsable, options);
 
-await fs.writeFile(options.out, selected.map(formatNodeLine).join('\n') + (selected.length ? '\n' : ''), 'utf8');
+await fs.writeFile(options.out, formatNodeLines(selected).join('\n') + (selected.length ? '\n' : ''), 'utf8');
 await fs.writeFile(options.json, JSON.stringify({
 	generatedAt: new Date().toISOString(),
 	elapsedMs: Date.now() - startedAt,
@@ -110,7 +110,7 @@ console.log(`countries=${JSON.stringify(countBy(selected, 'country'))}`);
 console.log(`ports=${JSON.stringify(countBy(selected, 'port'))}`);
 console.log(`wrote ${options.out}`);
 console.log(`wrote ${options.json}`);
-console.log(selected.slice(0, 12).map(formatNodeLine).join('\n'));
+console.log(formatNodeLines(selected.slice(0, 12)).join('\n'));
 
 async function fetchSources(urls) {
 	const results = new Array(urls.length);
@@ -450,12 +450,23 @@ function scoreCandidate(item) {
 	return speed * 120 + metricsBonus + countryBonus + portBonus + sourceBonus - latency / 8;
 }
 
-function formatNodeLine(item) {
+function formatNodeLines(items) {
+	const baseLabels = items.map(formatNodeLabel);
+	const totals = countValues(baseLabels);
+	const seen = new Map();
+	return items.map((item, index) => {
+		const base = baseLabels[index];
+		const next = (seen.get(base) || 0) + 1;
+		seen.set(base, next);
+		const label = totals[base] > 1 ? `${base}-${String(next).padStart(2, '0')}` : base;
+		return `${item.host}:${item.port}#${label}`;
+	});
+}
+
+function formatNodeLabel(item) {
 	const country = item.country || 'ZZ';
-	const colo = item.cfColo || 'UNK';
 	const speed = Number.isFinite(item.localSpeedMbps) ? formatSpeed(item.localSpeedMbps) : (Number.isFinite(item.speedMbps) ? formatSpeed(item.speedMbps) : 'NA');
-	const probe = Number.isFinite(item.probeMs) ? `CF${Math.round(item.probeMs)}` : 'CFNA';
-	return `${item.host}:${item.port}#${country}-${colo}-${speed}-${probe}`;
+	return `${country}-${speed}`;
 }
 
 function measuredSpeedMbps(item) {
@@ -506,6 +517,13 @@ function countBy(items, field) {
 	return items.reduce((acc, item) => {
 		const key = item[field] || 'UNKNOWN';
 		acc[key] = (acc[key] || 0) + 1;
+		return acc;
+	}, {});
+}
+
+function countValues(items) {
+	return items.reduce((acc, item) => {
+		acc[item] = (acc[item] || 0) + 1;
 		return acc;
 	}, {});
 }
