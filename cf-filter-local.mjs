@@ -12,6 +12,10 @@ const MASTER_APIS = [
 	'https://raw.githubusercontent.com/einsitang/my-fast-cf-ip/master/fastips.txt',
 	'https://raw.githubusercontent.com/hubbylei/bestcf/main/bestcf.txt',
 	'https://raw.githubusercontent.com/ymyuuu/IPDB/main/BestCF/bestcfv4.txt',
+	'https://raw.githubusercontent.com/HandsomeMJZ/cfip/main/best_ips.txt',
+	'https://raw.githubusercontent.com/HandsomeMJZ/cfip/main/full_ips.txt',
+	'https://raw.githubusercontent.com/lu-lingyun/CloudflareST/main/TLS.txt',
+	'https://raw.githubusercontent.com/lu-lingyun/CloudflareST/main/open_ips.txt',
 	'https://bestcf.pages.dev/uouin/all.txt',
 	'https://zip.cm.edu.kg/all.txt',
 ];
@@ -41,7 +45,7 @@ const options = {
 	minKeepSpeed: numberArg(args.minSpeed ?? args['min-speed'], 10),
 	probeHost: args.probeHost || args['probe-host'] || 'speed.cloudflare.com',
 	speedTest: args.speedTest !== '0' && args['speed-test'] !== '0',
-	speedScan: numberArg(args.speedScan ?? args['speed-scan'], 300),
+	speedScan: numberArg(args.speedScan ?? args['speed-scan'], 200),
 	speedBytes: numberArg(args.speedBytes ?? args['speed-bytes'], 1024 * 1024),
 	speedTimeout: numberArg(args.speedTimeout ?? args['speed-timeout'], 6000),
 	concurrency: numberArg(args.concurrency, 120),
@@ -122,7 +126,7 @@ async function fetchSources(urls) {
 }
 
 async function fetchSource(url, sourceIndex) {
-	for (let attempt = 1; attempt <= 2; attempt++) {
+	for (let attempt = 1; attempt <= 3; attempt++) {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), 45000);
 		try {
@@ -133,7 +137,7 @@ async function fetchSource(url, sourceIndex) {
 			const text = response.ok ? await response.text() : '';
 			return { url, sourceIndex, ok: response.ok, status: response.status, text };
 		} catch (error) {
-			if (attempt === 2) {
+			if (attempt === 3) {
 				return {
 					url,
 					sourceIndex,

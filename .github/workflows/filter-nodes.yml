@@ -30,7 +30,7 @@ jobs:
             --concurrency 120 \
             --timeout 2500 \
             --max-probe 1800 \
-            --speed-scan 300 \
+            --speed-scan 200 \
             --speed-bytes 1048576 \
             --speed-concurrency 8 \
             --speed-timeout 8000 \
