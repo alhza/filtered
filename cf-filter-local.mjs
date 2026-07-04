@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import net from 'node:net';
+import tls from 'node:tls';
 
 const MASTER_APIS = [
 	'https://ips.gaoji.uk/best_ips.txt',
@@ -20,8 +20,9 @@ const options = {
 	limit: numberArg(args.limit, 150),
 	scan: numberArg(args.scan, 4000),
 	connectTimeout: numberArg(args.timeout, 1600),
-	maxTcp: numberArg(args.maxTcp ?? args['max-tcp'], 800),
+	maxProbe: numberArg(args.maxProbe ?? args['max-probe'] ?? args.maxTcp ?? args['max-tcp'], 1200),
 	minKeepSpeed: numberArg(args.minSpeed ?? args['min-speed'], 10),
+	probeHost: args.probeHost || args['probe-host'] || 'speed.cloudflare.com',
 	concurrency: numberArg(args.concurrency, 120),
 	countries: listArg(args.countries, DEFAULT_COUNTRIES, true),
 	ports: listArg(args.ports, DEFAULT_PORTS, false),
@@ -36,7 +37,7 @@ const parsed = dedupeCandidates(fetched.flatMap(({ url, text, sourceIndex }) => 
 const scoped = applyStaticFilters(parsed, options);
 const queue = selectCheckQueue(scoped, options);
 const checked = await checkCandidates(queue, options);
-const usable = checked.filter(item => item.ok && item.checkMs <= options.maxTcp);
+const usable = checked.filter(item => item.ok && item.probeMs <= options.maxProbe);
 const selected = selectFinalNodes(usable, options);
 
 await fs.writeFile(options.out, selected.map(formatNodeLine).join('\n') + (selected.length ? '\n' : ''), 'utf8');
@@ -159,23 +160,30 @@ function applyStaticFilters(candidates, { countries, ports }) {
 	});
 }
 
-async function checkCandidates(candidates, { concurrency, connectTimeout }) {
+async function checkCandidates(candidates, { concurrency, connectTimeout, probeHost }) {
 	const results = [];
 	let index = 0;
 	const workers = Array.from({ length: Math.max(1, concurrency) }, async () => {
 		while (index < candidates.length) {
 			const item = candidates[index++];
-			results.push(await checkTcp(item, connectTimeout));
+			results.push(await checkCloudflareTrace(item, connectTimeout, probeHost));
 		}
 	});
 	await Promise.all(workers);
 	return results;
 }
 
-function checkTcp(candidate, timeoutMs) {
+function checkCloudflareTrace(candidate, timeoutMs, probeHost) {
 	return new Promise(resolve => {
 		const start = Date.now();
-		const socket = net.createConnection({ host: candidate.host, port: Number(candidate.port) });
+		const socket = tls.connect({
+			host: candidate.host,
+			port: Number(candidate.port),
+			servername: probeHost,
+			rejectUnauthorized: false,
+			ALPNProtocols: ['http/1.1'],
+		});
+		let responseText = '';
 		let finished = false;
 		const done = (ok, error = null) => {
 			if (finished) return;
@@ -184,12 +192,25 @@ function checkTcp(candidate, timeoutMs) {
 			resolve({
 				...candidate,
 				ok,
-				checkMs: Date.now() - start,
+				probeMs: Date.now() - start,
+				cfColo: extractTraceField(responseText, 'colo'),
+				cfIp: extractTraceField(responseText, 'ip'),
 				error,
 			});
 		};
 		socket.setTimeout(timeoutMs);
-		socket.once('connect', () => done(true));
+		socket.once('secureConnect', () => {
+			socket.write(`GET /cdn-cgi/trace HTTP/1.1\r\nHost: ${probeHost}\r\nUser-Agent: filtered-cf-nodes/1.0\r\nConnection: close\r\n\r\n`);
+		});
+		socket.on('data', chunk => {
+			responseText += chunk.toString('utf8');
+			if (responseText.includes('\ncolo=') && responseText.includes('\nip=')) done(true);
+			else if (responseText.length > 8192) done(false, 'invalid-trace');
+		});
+		socket.once('end', () => {
+			const ok = responseText.includes('\ncolo=') && responseText.includes('\nip=');
+			done(ok, ok ? null : 'no-cloudflare-trace');
+		});
 		socket.once('timeout', () => done(false, 'timeout'));
 		socket.once('error', error => done(false, error.code || error.message));
 	});
@@ -275,11 +296,11 @@ function compareCandidateScore(a, b) {
 function compareCheckedScore(a, b) {
 	const scoreCompare = scoreChecked(b) - scoreChecked(a);
 	if (scoreCompare) return scoreCompare;
-	return (a.checkMs || 9999) - (b.checkMs || 9999);
+	return (a.probeMs || 9999) - (b.probeMs || 9999);
 }
 
 function scoreChecked(item) {
-	return scoreCandidate(item) - (item.checkMs || 9999) / 4;
+	return scoreCandidate(item) - (item.probeMs || 9999) / 4;
 }
 
 function scoreCandidate(item) {
@@ -297,8 +318,14 @@ function formatNodeLine(item) {
 	if (item.country) tags.push(item.country);
 	if (Number.isFinite(item.latencyMs)) tags.push(`${Math.round(item.latencyMs)}ms`);
 	if (Number.isFinite(item.speedMbps)) tags.push(`${Math.round(item.speedMbps)}Mbps`);
-	tags.push(`tcp${item.checkMs}ms`);
+	if (item.cfColo) tags.push(item.cfColo);
+	tags.push(`cf${item.probeMs}ms`);
 	return `${item.host}:${item.port}#${tags.join(' ')}`;
+}
+
+function extractTraceField(text, field) {
+	const match = String(text || '').match(new RegExp(`(?:^|\\n)${field}=([^\\r\\n]+)`));
+	return match ? match[1] : '';
 }
 
 function extractCountry(text) {
