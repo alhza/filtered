@@ -1,0 +1,42 @@
+name: Filter Nodes
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  filter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Filter high-speed balanced nodes
+        run: |
+          node cf-filter-local.mjs \
+            --limit 100 \
+            --scan 5000 \
+            --concurrency 120 \
+            --timeout 1600 \
+            --max-tcp 800 \
+            --out filtered-best-nodes.txt \
+            --json filtered-best-nodes.json
+
+      - name: Commit filtered result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add filtered-best-nodes.txt filtered-best-nodes.json
+          git diff --cached --quiet || git commit -m "chore: 更新优选节点"
+          git push
