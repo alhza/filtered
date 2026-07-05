@@ -114,6 +114,7 @@ const DEFAULT_COUNTRIES = Object.keys(COUNTRY_LABELS);
 
 const args = parseArgs(process.argv.slice(2));
 const minKeepSpeed = numberArg(args.minSpeed ?? args['min-speed'], 10);
+const rankBySource = (args.rankBySource ?? args['rank-by-source']) === '1';
 const options = {
 	limit: numberArg(args.limit, 150),
 	scan: numberArg(args.scan, 4000),
@@ -122,7 +123,8 @@ const options = {
 	minKeepSpeed,
 	fallbackMinSpeed: numberArg(args.fallbackMinSpeed ?? args['fallback-min-speed'], minKeepSpeed),
 	probeHost: args.probeHost || args['probe-host'] || 'speed.cloudflare.com',
-	speedTest: args.speedTest !== '0' && args['speed-test'] !== '0',
+	rankBySource,
+	speedTest: !rankBySource && args.speedTest !== '0' && args['speed-test'] !== '0',
 	speedScan: numberArg(args.speedScan ?? args['speed-scan'], 300),
 	speedBytes: numberArg(args.speedBytes ?? args['speed-bytes'], 4 * 1024 * 1024),
 	speedSamples: numberArg(args.speedSamples ?? args['speed-samples'], 2),
@@ -449,11 +451,11 @@ function applyStaticFilters(candidates, { countries, ports }) {
 	});
 }
 
-async function checkCandidates(candidates, { concurrency, connectTimeout, probeHost }, onProgress) {
-	return mapConcurrent(candidates, concurrency, item => checkCloudflareTrace(item, connectTimeout, probeHost), onProgress);
+async function checkCandidates(candidates, { concurrency, connectTimeout, probeHost, rankBySource }, onProgress) {
+	return mapConcurrent(candidates, concurrency, item => checkCloudflareTrace(item, connectTimeout, probeHost, rankBySource), onProgress);
 }
 
-function checkCloudflareTrace(candidate, timeoutMs, probeHost) {
+function checkCloudflareTrace(candidate, timeoutMs, probeHost, preserveCountry = false) {
 	return new Promise(resolve => {
 		const start = Date.now();
 		const socket = tls.connect({
@@ -475,7 +477,7 @@ function checkCloudflareTrace(candidate, timeoutMs, probeHost) {
 				...candidate,
 				ok,
 				probeMs: Date.now() - start,
-				country: COLO_COUNTRY[cfColo] || candidate.country || '',
+				country: preserveCountry && candidate.country ? candidate.country : (COLO_COUNTRY[cfColo] || candidate.country || ''),
 				cfColo,
 				cfIp: extractTraceField(responseText, 'ip'),
 				error,

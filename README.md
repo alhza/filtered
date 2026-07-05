@@ -73,6 +73,11 @@ Notes:
 
 ```text
 --limit is a maximum, not a target that must be filled.
+--rank-by-source 1 skips local speed tests, keeps upstream country labels, and ranks
+by the speeds measured by China-side sources (wetest, hostmonit, 090227, HandsomeMJZ).
+Use it when the runner sits outside China (e.g. GitHub Actions CI): a foreign runner's
+own download speed is meaningless for mainland users, so it only verifies reachability.
+Running locally WITHOUT this flag is the gold standard: real speeds from your own line.
 --subnet-limit keeps at most N nodes per subnet before speed testing; 0 disables the dedupe.
 --coarse-scan 0 coarse-tests every reachable node after subnet dedupe; ordering uses local probe time only.
 --coarse-min-speed drops nodes whose coarse sample cannot reach the floor, so fine slots go to real candidates.
