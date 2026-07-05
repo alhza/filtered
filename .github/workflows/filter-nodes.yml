@@ -11,7 +11,7 @@ permissions:
 jobs:
   filter:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -33,8 +33,14 @@ jobs:
             --concurrency 120 \
             --timeout 2500 \
             --max-probe 1800 \
-            --speed-scan 200 \
-            --speed-bytes 1048576 \
+            --subnet-limit 1 \
+            --coarse-bytes 262144 \
+            --coarse-timeout 4000 \
+            --coarse-concurrency 16 \
+            --coarse-min-speed 2 \
+            --speed-scan 300 \
+            --speed-bytes 4194304 \
+            --speed-samples 2 \
             --speed-concurrency 8 \
             --speed-timeout 8000 \
             --min-speed-ms 50 \

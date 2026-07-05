@@ -28,16 +28,19 @@ Selection priority:
 
 ```text
 1. Every final node must pass Cloudflare trace and local download test.
-2. Prefer nodes with trusted local download speed >= 10Mbps.
-3. If the primary tier is too small, fill with tested backup nodes >= 5Mbps.
-4. Ignore speed samples that finish too quickly to avoid burst-only scores.
-5. Publish up to 150 nodes; never fill with nodes below the backup threshold.
+2. Deduplicate by subnet (/24 for IPv4, /48 for IPv6) before speed testing.
+3. Coarse-test the whole reachable pool with a small sample, ranked by local TLS probe time.
+4. Fine-test the fastest coarse survivors with a large sample, multiple rounds, best result kept.
+5. Prefer nodes with trusted local download speed >= 10Mbps.
+6. If the primary tier is too small, fill with tested backup nodes >= 5Mbps.
+7. Ignore speed samples that finish too quickly to avoid burst-only scores.
+8. Publish up to 150 nodes; never fill with nodes below the backup threshold.
 ```
 
 ## Local Run
 
 ```powershell
-node .\cf-filter-local.mjs --limit 150 --scan 5000 --concurrency 120 --timeout 2500 --max-probe 1800 --speed-scan 200 --speed-bytes 1048576 --speed-concurrency 8 --speed-timeout 8000 --min-speed-ms 50 --min-speed 10 --fallback-min-speed 5
+node .\cf-filter-local.mjs --limit 150 --scan 5000 --concurrency 120 --timeout 2500 --max-probe 1800 --subnet-limit 1 --coarse-bytes 262144 --coarse-timeout 4000 --coarse-concurrency 16 --coarse-min-speed 2 --speed-scan 300 --speed-bytes 4194304 --speed-samples 2 --speed-concurrency 8 --speed-timeout 8000 --min-speed-ms 50 --min-speed 10 --fallback-min-speed 5
 ```
 
 Useful options:
@@ -49,8 +52,15 @@ Useful options:
 --ports 443,8443,2053,2083,2087,2096
 --balanced 1
 --max-probe 1800
---speed-scan 200
---speed-bytes 1048576
+--subnet-limit 1
+--coarse-scan 0
+--coarse-bytes 262144
+--coarse-timeout 4000
+--coarse-concurrency 16
+--coarse-min-speed 2
+--speed-scan 300
+--speed-bytes 4194304
+--speed-samples 2
 --speed-concurrency 8
 --speed-timeout 8000
 --min-speed-ms 50
@@ -63,10 +73,16 @@ Notes:
 
 ```text
 --limit is a maximum, not a target that must be filled.
+--subnet-limit keeps at most N nodes per subnet before speed testing; 0 disables the dedupe.
+--coarse-scan 0 coarse-tests every reachable node after subnet dedupe; ordering uses local probe time only.
+--coarse-min-speed drops nodes whose coarse sample cannot reach the floor, so fine slots go to real candidates.
+--speed-scan is the fine-test slot count; candidates are ranked by their measured coarse speed.
+--speed-samples runs several fine downloads per node and keeps the best one to absorb TCP slow start.
 --strict-min-speed 1 prevents nodes below --fallback-min-speed from filling empty slots.
 --fallback-min-speed keeps the list usable when too few nodes reach --min-speed.
 --min-speed-ms discards very short download samples such as 1MiB in 8ms.
-The workflow uses a single download test per candidate to avoid repeated probing.
+Upstream-claimed speed and latency are only used before any local measurement exists;
+once a node has a local download result, ranking trusts the local numbers alone.
 ```
 
 ## Upstreams
@@ -95,4 +111,10 @@ https://cf.090227.xyz/cu
 https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v4
 https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v6
 https://api.hostmonit.com/get_optimization_ip
+https://ipdb.api.030101.xyz/?type=bestcf&country=true
+https://addressesapi.090227.xyz/ct
+https://cdn.jsdelivr.net/gh/HandsomeMJZ/cfip@main/best_ips.txt
+https://cdn.jsdelivr.net/gh/HandsomeMJZ/cfip@main/full_ips.txt
+https://ip.164746.xyz/ipTop10.html
+https://cdn.jsdelivr.net/gh/ZhiXuanWang/cf-speed-dns@main/ipTop10.html
 ```

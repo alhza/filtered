@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 
 import {
 	calculateLocalSpeedMbps,
+	dedupeBySubnet,
 	selectFinalNodes,
+	subnetKey,
 } from './cf-filter-core.mjs';
 
 test('selectFinalNodes keeps only nodes at or above the minimum speed', () => {
@@ -79,6 +81,51 @@ test('calculateLocalSpeedMbps accepts samples with enough duration', () => {
 	});
 
 	assert.ok(Math.abs(speed - 83.8944) < 0.000001);
+});
+
+test('selectFinalNodes ranks by local measurement and ignores claimed metrics', () => {
+	const measuredOnly = { ...node('measured-only', 'US', 20, 30) };
+	const claimedBoost = {
+		...node('claimed-boost', 'US', 18, 30),
+		speedMbps: 100,
+		latencyMs: 5,
+	};
+
+	const selected = selectFinalNodes([claimedBoost, measuredOnly], {
+		limit: 2,
+		minKeepSpeed: 10,
+		balanced: true,
+		countries: ['US'],
+	});
+
+	assert.deepEqual(selected.map(item => item.host), ['measured-only', 'claimed-boost']);
+});
+
+test('subnetKey groups IPv4 by /24, IPv6 by /48 and keeps hostnames intact', () => {
+	assert.equal(subnetKey('172.64.52.169'), '172.64.52');
+	assert.equal(subnetKey('172.64.53.169'), '172.64.53');
+	assert.equal(subnetKey('2606:4700::6810:84e5'), '2606:4700:0000');
+	assert.equal(subnetKey('2606:4700:0:0:0:0:6810:84e5'), '2606:4700:0000');
+	assert.equal(subnetKey('Example.COM'), 'example.com');
+});
+
+test('dedupeBySubnet keeps the best node per subnet up to the limit', () => {
+	const nodes = [
+		{ host: '172.64.52.1', probeMs: 300 },
+		{ host: '172.64.52.2', probeMs: 100 },
+		{ host: '172.64.52.3', probeMs: 200 },
+		{ host: '172.64.53.1', probeMs: 400 },
+	];
+
+	const byProbe = (a, b) => (a.probeMs || 9999) - (b.probeMs || 9999);
+	const deduped = dedupeBySubnet(nodes, { limit: 1, compareFn: byProbe });
+	assert.deepEqual(deduped.map(item => item.host), ['172.64.52.2', '172.64.53.1']);
+
+	const dedupedTwo = dedupeBySubnet(nodes, { limit: 2, compareFn: byProbe });
+	assert.deepEqual(dedupedTwo.map(item => item.host), ['172.64.52.2', '172.64.52.3', '172.64.53.1']);
+
+	const disabled = dedupeBySubnet(nodes, { limit: 0, compareFn: byProbe });
+	assert.equal(disabled.length, 4);
 });
 
 function node(host, country, localSpeedMbps, probeMs) {
