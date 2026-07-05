@@ -46,6 +46,16 @@ const SOURCES = [
 		method: 'POST',
 		body: { key: 'iDetkOys', type: 'v6' },
 	},
+	'https://addressesapi.090227.xyz/ct',
+	'https://addressesapi.090227.xyz/cmcc',
+	'https://cf.090227.xyz/ct',
+	'https://cdn.jsdelivr.net/gh/HandsomeMJZ/cfip@main/best_ips.txt',
+	'https://cdn.jsdelivr.net/gh/HandsomeMJZ/cfip@main/full_ips.txt',
+	'https://cdn.jsdelivr.net/gh/ymyuuu/IPDB@main/BestCF/bestcfv6.txt',
+	{
+		url: 'https://ip.164746.xyz/ipTop10.html',
+		parser: 'iplist',
+	},
 ];
 
 const DEFAULT_PORTS = ['443', '8443', '2053', '2083', '2087', '2096'];
@@ -276,7 +286,25 @@ function parseSource(source) {
 	if (!source.ok) return [];
 	if (source.parser === 'wetest') return parseWeTestSource(source);
 	if (source.parser === 'hostmonit') return parseHostMonitSource(source);
+	if (source.parser === 'iplist') return parseIpListSource(source);
 	return parseTextSource(source);
+}
+
+function parseIpListSource({ text, url, sourceIndex }) {
+	const rows = [];
+	for (const token of extractEndpointTokens(text)) {
+		const row = parseLine(token, url, sourceIndex);
+		if (row) rows.push(row);
+	}
+	return rows;
+}
+
+function extractEndpointTokens(text) {
+	const tokens = [];
+	const input = String(text || '');
+	const endpointPattern = /(?:\[[0-9a-fA-F:]{6,}\]|(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])|(?<![0-9a-fA-F:])(?:[0-9a-fA-F]{1,4}:){2,}[0-9a-fA-F]{1,4}(?![0-9a-fA-F:]))(?::\d{2,5})?(?:#[^\s<>,;"']+)?/g;
+	for (const match of input.matchAll(endpointPattern)) tokens.push(match[0]);
+	return tokens;
 }
 
 function parseTextSource({ text, url, sourceIndex }) {
@@ -356,13 +384,13 @@ function parseLine(rawLine, sourceUrl, sourceIndex) {
 	const line = String(rawLine || '').trim();
 	if (!line || line.startsWith('#') || line.startsWith('//')) return null;
 
-	const match = line.match(/^(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+):(\d{2,5})(?:#(.+))?/);
-	const ipOnlyMatch = match ? null : line.match(/^((?:\d{1,3}\.){3}\d{1,3}|\[[0-9a-fA-F:]+\]|[0-9a-fA-F:]{6,})(?:#(.+))?$/);
+	const ipOnlyMatch = line.match(/^((?:\d{1,3}\.){3}\d{1,3}|\[[0-9a-fA-F:]+\]|[0-9a-fA-F:]{6,})(?:#(.+))?$/);
+	const match = ipOnlyMatch ? null : line.match(/^(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+):(\d{2,5})(?:#(.+))?/);
 	if (!match && !ipOnlyMatch) return null;
 
-	const host = (match ? match[1] : ipOnlyMatch[1]).replace(/^\[|\]$/g, '');
-	const port = match ? match[2] : '443';
-	const remark = safeDecode((match ? match[3] : ipOnlyMatch[2]) || '');
+	const host = (ipOnlyMatch ? ipOnlyMatch[1] : match[1]).replace(/^\[|\]$/g, '');
+	const port = ipOnlyMatch ? '443' : match[2];
+	const remark = safeDecode((ipOnlyMatch ? ipOnlyMatch[2] : match[3]) || '');
 	const country = extractCountry(remark);
 	const metrics = extractMetrics(remark);
 

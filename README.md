@@ -95,4 +95,11 @@ https://cf.090227.xyz/cu
 https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v4
 https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v6
 https://api.hostmonit.com/get_optimization_ip
+https://addressesapi.090227.xyz/ct
+https://addressesapi.090227.xyz/cmcc
+https://cf.090227.xyz/ct
+https://cdn.jsdelivr.net/gh/HandsomeMJZ/cfip@main/best_ips.txt
+https://cdn.jsdelivr.net/gh/HandsomeMJZ/cfip@main/full_ips.txt
+https://cdn.jsdelivr.net/gh/ymyuuu/IPDB@main/BestCF/bestcfv6.txt
+https://ip.164746.xyz/ipTop10.html
 ```
