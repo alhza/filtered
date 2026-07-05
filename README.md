@@ -39,8 +39,16 @@ Selection priority:
 
 ## Local Run
 
+Defaults are tuned already; a bare run is the recommended local usage:
+
 ```powershell
-node .\cf-filter-local.mjs --limit 150 --scan 5000 --concurrency 120 --timeout 2500 --max-probe 1800 --subnet-limit 1 --coarse-bytes 262144 --coarse-timeout 4000 --coarse-concurrency 16 --coarse-min-speed 2 --speed-scan 300 --speed-bytes 4194304 --speed-samples 2 --speed-concurrency 8 --speed-timeout 8000 --min-speed-ms 50 --min-speed 10 --fallback-min-speed 5
+node .\cf-filter-local.mjs
+```
+
+Equivalent to:
+
+```powershell
+node .\cf-filter-local.mjs --limit 150 --scan 4000 --concurrency 120 --timeout 2500 --max-probe 1800 --subnet-limit 1 --coarse-bytes 131072 --coarse-timeout 3000 --coarse-concurrency 12 --coarse-min-speed 1 --speed-scan 300 --speed-bytes 4194304 --speed-samples 2 --speed-concurrency 4 --speed-timeout 8000 --min-speed-ms 50 --min-speed 10 --fallback-min-speed 5
 ```
 
 Useful options:
@@ -54,25 +62,28 @@ Useful options:
 --max-probe 1800
 --subnet-limit 1
 --coarse-scan 0
---coarse-bytes 262144
---coarse-timeout 4000
---coarse-concurrency 16
---coarse-min-speed 2
+--coarse-bytes 131072
+--coarse-timeout 3000
+--coarse-concurrency 12
+--coarse-min-speed 1
 --speed-scan 300
 --speed-bytes 4194304
 --speed-samples 2
---speed-concurrency 8
+--speed-concurrency 4
 --speed-timeout 8000
 --min-speed-ms 50
 --min-speed 10
 --fallback-min-speed 5
 --strict-min-speed 1
+--rank-by-source 0
 ```
 
 Notes:
 
 ```text
 --limit is a maximum, not a target that must be filled.
+Speed-test concurrency is deliberately low (coarse 12, fine 4): higher values make
+parallel downloads compete for your own uplink and understate every node's speed.
 --rank-by-source 1 skips local speed tests, keeps upstream country labels, and ranks
 by the speeds measured by China-side sources (wetest, hostmonit, 090227, HandsomeMJZ).
 Use it when the runner sits outside China (e.g. GitHub Actions CI): a foreign runner's
