@@ -18,12 +18,11 @@ const SCORE_WEIGHTS = {
 };
 
 export function selectFinalNodes(candidates, options) {
-	const thresholds = selectionThresholds(options);
 	return selectPriorityFill(candidates, {
 		targetSize: options.limit,
 		maxSize: options.limit,
-		minKeepSpeed: thresholds.minKeepSpeed,
-		fallbackMinSpeed: thresholds.fallbackMinSpeed,
+		minKeepSpeed: options.minKeepSpeed,
+		fallbackMinSpeed: options.fallbackMinSpeed ?? options.minKeepSpeed,
 		strictMinSpeed: options.strictMinSpeed !== false,
 		balanced: options.balanced,
 		countries: options.countries,
@@ -64,58 +63,8 @@ export function calculateLocalSpeedMbps({ bodyBytes, elapsedMs, minElapsedMs = 5
 	return (bodyBytes * 8) / elapsedMs / 1000;
 }
 
-export function subnetKey(host) {
-	const raw = String(host || '').trim().toLowerCase();
-	if (/^(\d{1,3}\.){3}\d{1,3}$/.test(raw)) {
-		return raw.split('.').slice(0, 3).join('.');
-	}
-	if (raw.includes(':')) {
-		return expandIpv6(raw).slice(0, 3).join(':');
-	}
-	return raw;
-}
-
-export function dedupeBySubnet(items, { limit = 1, compareFn }) {
-	if (!(limit > 0)) return [...items];
-	const groups = new Map();
-	for (const item of items) {
-		const key = subnetKey(item.host);
-		if (!groups.has(key)) groups.set(key, []);
-		groups.get(key).push(item);
-	}
-	const result = [];
-	for (const list of groups.values()) {
-		if (compareFn) list.sort(compareFn);
-		result.push(...list.slice(0, limit));
-	}
-	return result;
-}
-
-function expandIpv6(raw) {
-	const [head, tail = ''] = raw.replace(/^\[|\]$/g, '').split('::');
-	const headGroups = head ? head.split(':') : [];
-	const tailGroups = tail ? tail.split(':') : [];
-	const missing = Math.max(0, 8 - headGroups.length - tailGroups.length);
-	return [...headGroups, ...Array(missing).fill('0'), ...tailGroups]
-		.map(group => group.padStart(4, '0'));
-}
-
 export function isHighSpeed(item, threshold) {
 	return measuredSpeedMbps(item) >= threshold;
-}
-
-export function selectionThresholds(options) {
-	if (options?.rankBySource) {
-		const minKeepSpeed = options.minSourceSpeed ?? options.minKeepSpeed;
-		return {
-			minKeepSpeed,
-			fallbackMinSpeed: options.fallbackMinSourceSpeed ?? options.fallbackMinSpeed ?? minKeepSpeed,
-		};
-	}
-	return {
-		minKeepSpeed: options.minKeepSpeed,
-		fallbackMinSpeed: options.fallbackMinSpeed ?? options.minKeepSpeed,
-	};
 }
 
 function groupAndSort(items, compareFn) {
@@ -165,13 +114,10 @@ function scoreChecked(item) {
 }
 
 function scoreCandidate(item) {
-	const countryBonus = orderedBonus(item.country, DEFAULT_COUNTRIES, SCORE_WEIGHTS.countryBase, SCORE_WEIGHTS.countryStep);
-	const portBonus = orderedBonus(item.port, DEFAULT_PORTS, SCORE_WEIGHTS.portBase, SCORE_WEIGHTS.portStep);
-	if (Number.isFinite(item.localSpeedMbps)) {
-		return item.localSpeedMbps * SCORE_WEIGHTS.speed + countryBonus + portBonus;
-	}
 	const speed = measuredSpeedMbps(item);
 	const latency = Number.isFinite(item.latencyMs) ? item.latencyMs : 9999;
+	const countryBonus = orderedBonus(item.country, DEFAULT_COUNTRIES, SCORE_WEIGHTS.countryBase, SCORE_WEIGHTS.countryStep);
+	const portBonus = orderedBonus(item.port, DEFAULT_PORTS, SCORE_WEIGHTS.portBase, SCORE_WEIGHTS.portStep);
 	const sourceBonus = Math.max(0, SCORE_WEIGHTS.sourceBase - item.sourceIndex * SCORE_WEIGHTS.sourceStep);
 	const metricsBonus = Number.isFinite(item.speedMbps) || Number.isFinite(item.latencyMs) ? SCORE_WEIGHTS.metrics : 0;
 	return speed * SCORE_WEIGHTS.speed + metricsBonus + countryBonus + portBonus + sourceBonus - latency / SCORE_WEIGHTS.latencyDivisor;

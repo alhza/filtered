@@ -11,7 +11,7 @@ permissions:
 jobs:
   filter:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -27,21 +27,14 @@ jobs:
 
       - name: Filter high-speed balanced nodes
         run: |
-          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
           node cf-filter-local.mjs \
             --limit 150 \
             --scan 5000 \
             --concurrency 120 \
             --timeout 2500 \
             --max-probe 1800 \
-            --subnet-limit 1 \
-            --coarse-bytes 262144 \
-            --coarse-timeout 4000 \
-            --coarse-concurrency 16 \
-            --coarse-min-speed 2 \
-            --speed-scan 300 \
-            --speed-bytes 4194304 \
-            --speed-samples 2 \
+            --speed-scan 200 \
+            --speed-bytes 1048576 \
             --speed-concurrency 8 \
             --speed-timeout 8000 \
             --min-speed-ms 50 \
