@@ -4,6 +4,7 @@ import {
 	calculateLocalSpeedMbps,
 	dedupeBySubnet,
 	selectFinalNodes as selectFinalNodesStrict,
+	selectionThresholds,
 } from './cf-filter-core.mjs';
 
 const SOURCES = [
@@ -122,6 +123,8 @@ const options = {
 	maxProbe: numberArg(args.maxProbe ?? args['max-probe'] ?? args.maxTcp ?? args['max-tcp'], 1800),
 	minKeepSpeed,
 	fallbackMinSpeed: numberArg(args.fallbackMinSpeed ?? args['fallback-min-speed'], Math.min(5, minKeepSpeed)),
+	minSourceSpeed: numberArg(args.minSourceSpeed ?? args['min-source-speed'], minKeepSpeed),
+	fallbackMinSourceSpeed: numberArg(args.fallbackMinSourceSpeed ?? args['fallback-min-source-speed'], Math.min(5, minKeepSpeed)),
 	probeHost: args.probeHost || args['probe-host'] || 'speed.cloudflare.com',
 	rankBySource,
 	speedTest: !rankBySource && args.speedTest !== '0' && args['speed-test'] !== '0',
@@ -196,6 +199,7 @@ function buildReport({ startedAt, fetched, parsed, scoped, queue, checked, usabl
 }
 
 function buildStats({ parsed, scoped, queue, checked, usable, subnetPool, coarseQueue, coarsePassed, speedQueue, measured, speedUsable, selected, options }) {
+	const thresholds = selectionThresholds(options);
 	return {
 		parsed: parsed.length,
 		scoped: scoped.length,
@@ -209,9 +213,9 @@ function buildStats({ parsed, scoped, queue, checked, usable, subnetPool, coarse
 		speedTested: measured.length,
 		speedUsable: speedUsable.length,
 		selected: selected.length,
-		highSpeedUsable: speedUsable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
-		highSpeedSelected: selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
-		fallbackSpeedSelected: selected.filter(item => !isHighSpeed(item, options.minKeepSpeed) && isHighSpeed(item, options.fallbackMinSpeed)).length,
+		highSpeedUsable: speedUsable.filter(item => isHighSpeed(item, thresholds.minKeepSpeed)).length,
+		highSpeedSelected: selected.filter(item => isHighSpeed(item, thresholds.minKeepSpeed)).length,
+		fallbackSpeedSelected: selected.filter(item => !isHighSpeed(item, thresholds.minKeepSpeed) && isHighSpeed(item, thresholds.fallbackMinSpeed)).length,
 		countryDistribution: countBy(selected, 'country'),
 		portDistribution: countBy(selected, 'port'),
 	};
@@ -230,10 +234,11 @@ function formatSourceSummary(item) {
 }
 
 function printSummary({ parsed, scoped, queue, checked, usable, subnetPool, coarseQueue, coarsePassed, speedQueue, speedUsable, selected, options }) {
+	const thresholds = selectionThresholds(options);
 	console.log(`parsed=${parsed.length} scoped=${scoped.length} queued=${queue.length} checked=${checked.length} usable=${usable.length}`);
 	console.log(`subnetPool=${subnetPool.length} coarseQueued=${coarseQueue.length} coarsePassed>=${options.coarseMinSpeed}Mbps=${coarsePassed.length} fineQueued=${speedQueue.length} speedUsable=${speedUsable.length} selected=${selected.length}`);
-	console.log(`highSpeed>${options.minKeepSpeed}Mbps usable=${speedUsable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} selected=${selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length}`);
-	console.log(`fallback>=${options.fallbackMinSpeed}Mbps selected=${selected.filter(item => !isHighSpeed(item, options.minKeepSpeed) && isHighSpeed(item, options.fallbackMinSpeed)).length}`);
+	console.log(`highSpeed>${thresholds.minKeepSpeed}Mbps usable=${speedUsable.filter(item => isHighSpeed(item, thresholds.minKeepSpeed)).length} selected=${selected.filter(item => isHighSpeed(item, thresholds.minKeepSpeed)).length}`);
+	console.log(`fallback>=${thresholds.fallbackMinSpeed}Mbps selected=${selected.filter(item => !isHighSpeed(item, thresholds.minKeepSpeed) && isHighSpeed(item, thresholds.fallbackMinSpeed)).length}`);
 	console.log(`countries=${JSON.stringify(countBy(selected, 'country'))}`);
 	console.log(`ports=${JSON.stringify(countBy(selected, 'port'))}`);
 	console.log(`wrote ${options.out}`);

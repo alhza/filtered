@@ -18,11 +18,12 @@ const SCORE_WEIGHTS = {
 };
 
 export function selectFinalNodes(candidates, options) {
+	const thresholds = selectionThresholds(options);
 	return selectPriorityFill(candidates, {
 		targetSize: options.limit,
 		maxSize: options.limit,
-		minKeepSpeed: options.minKeepSpeed,
-		fallbackMinSpeed: options.fallbackMinSpeed ?? options.minKeepSpeed,
+		minKeepSpeed: thresholds.minKeepSpeed,
+		fallbackMinSpeed: thresholds.fallbackMinSpeed,
 		strictMinSpeed: options.strictMinSpeed !== false,
 		balanced: options.balanced,
 		countries: options.countries,
@@ -101,6 +102,20 @@ function expandIpv6(raw) {
 
 export function isHighSpeed(item, threshold) {
 	return measuredSpeedMbps(item) >= threshold;
+}
+
+export function selectionThresholds(options) {
+	if (options?.rankBySource) {
+		const minKeepSpeed = options.minSourceSpeed ?? options.minKeepSpeed;
+		return {
+			minKeepSpeed,
+			fallbackMinSpeed: options.fallbackMinSourceSpeed ?? options.fallbackMinSpeed ?? minKeepSpeed,
+		};
+	}
+	return {
+		minKeepSpeed: options.minKeepSpeed,
+		fallbackMinSpeed: options.fallbackMinSpeed ?? options.minKeepSpeed,
+	};
 }
 
 function groupAndSort(items, compareFn) {

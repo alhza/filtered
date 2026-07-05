@@ -63,6 +63,27 @@ test('selectFinalNodes fills from fallback speed tier without using very slow no
 	assert.deepEqual(selected.map(item => item.host), ['fast-1', 'fallback-1', 'fallback-2']);
 });
 
+test('selectFinalNodes uses source thresholds in rank-by-source mode', () => {
+	const nodes = [
+		sourceNode('source-fast', 'JP', 9, 30),
+		sourceNode('source-fallback', 'HK', 5, 20),
+		sourceNode('source-too-slow', 'SG', 4.9, 10),
+	];
+
+	const selected = selectFinalNodes(nodes, {
+		limit: 10,
+		minKeepSpeed: 10,
+		fallbackMinSpeed: 0,
+		minSourceSpeed: 8,
+		fallbackMinSourceSpeed: 5,
+		rankBySource: true,
+		balanced: true,
+		countries: ['JP', 'HK', 'SG'],
+	});
+
+	assert.deepEqual(selected.map(item => item.host), ['source-fast', 'source-fallback']);
+});
+
 test('calculateLocalSpeedMbps rejects burst samples that finish too quickly', () => {
 	const speed = calculateLocalSpeedMbps({
 		bodyBytes: 1_048_680,
@@ -134,6 +155,17 @@ function node(host, country, localSpeedMbps, probeMs) {
 		port: '443',
 		country,
 		localSpeedMbps,
+		probeMs,
+		sourceIndex: 0,
+	};
+}
+
+function sourceNode(host, country, speedMbps, probeMs) {
+	return {
+		host,
+		port: '443',
+		country,
+		speedMbps,
 		probeMs,
 		sourceIndex: 0,
 	};

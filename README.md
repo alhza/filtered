@@ -21,8 +21,12 @@ https://raw.githubusercontent.com/alhza/filtered/main/filtered-best-nodes.txt
 Line format:
 
 ```text
-IP:PORT#中文国家-LOCAL_DOWNLOAD_Mbps
+IP:PORT#中文国家-SPEED_Mbps
 ```
+
+`SPEED_Mbps` is local download speed in normal local runs. In GitHub Actions
+`--rank-by-source` mode, it is the upstream China-side measured speed because
+GitHub-hosted runners are not located on an Asia/China user network.
 
 Selection priority:
 
@@ -74,6 +78,8 @@ Useful options:
 --min-speed-ms 50
 --min-speed 10
 --fallback-min-speed 5
+--min-source-speed 10
+--fallback-min-source-speed 5
 --strict-min-speed 1
 --rank-by-source 0
 ```
@@ -88,6 +94,10 @@ parallel downloads compete for your own uplink and understate every node's speed
 by the speeds measured by China-side sources (wetest, hostmonit, 090227, HandsomeMJZ).
 Use it when the runner sits outside China (e.g. GitHub Actions CI): a foreign runner's
 own download speed is meaningless for mainland users, so it only verifies reachability.
+In that mode, keep the default country list to publish globally useful nodes while
+ranking them from China-side measurements. Only pass `--countries HK,JP,SG,TW,KR,TH,MY,VN,IN,AU`
+when you intentionally want an Asia-only list. Use `--min-source-speed` /
+`--fallback-min-source-speed` for source speed thresholds.
 Running locally WITHOUT this flag is the gold standard: real speeds from your own line.
 --subnet-limit keeps at most N nodes per subnet before speed testing; 0 disables the dedupe.
 --coarse-scan 0 coarse-tests every reachable node after subnet dedupe; ordering uses local probe time only.

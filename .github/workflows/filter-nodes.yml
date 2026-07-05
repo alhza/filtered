@@ -30,6 +30,7 @@ jobs:
       # wetest/hostmonit/090227/HandsomeMJZ 等中国三网实测源的数据。
       - name: Filter nodes trusted by China-measured sources
         run: |
+          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
           node cf-filter-local.mjs \
             --limit 150 \
             --scan 5000 \
@@ -38,8 +39,8 @@ jobs:
             --max-probe 1800 \
             --subnet-limit 1 \
             --rank-by-source 1 \
-            --min-speed 10 \
-            --fallback-min-speed 5 \
+            --min-source-speed 10 \
+            --fallback-min-source-speed 5 \
             --out filtered-best-nodes.txt \
             --json filtered-best-nodes.json
 
