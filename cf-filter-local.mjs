@@ -148,18 +148,27 @@ await run();
 
 async function run() {
 	const startedAt = Date.now();
+	const progress = message => console.error(`[${Math.round((Date.now() - startedAt) / 1000)}s] ${message}`);
+	const stageProgress = (stage, step = 250) => (completed, total) => {
+		if (completed % step === 0 || completed === total) progress(`${stage} ${completed}/${total}`);
+	};
 	const fetched = await fetchSources(SOURCES);
+	progress(`sources ok=${fetched.filter(item => item.ok).length}/${fetched.length}`);
 	const parsed = dedupeCandidates(fetched.flatMap(source => parseSource(source)));
 	const scoped = applyStaticFilters(parsed, options);
 	const queue = selectCheckQueue(scoped, options);
-	const checked = await checkCandidates(queue, options);
+	progress(`parsed=${parsed.length} scoped=${scoped.length} traceQueue=${queue.length}`);
+	const checked = await checkCandidates(queue, options, stageProgress('trace'));
 	const usable = filterUsableChecked(checked, options);
 	const subnetPool = dedupeBySubnet(usable, { limit: options.subnetLimit, compareFn: compareProbeMs });
+	progress(`usable=${usable.length} subnetPool=${subnetPool.length}`);
 	const coarseQueue = options.speedTest ? selectCoarseQueue(subnetPool, options) : [];
-	const coarseTested = options.speedTest ? await coarseTestCandidates(coarseQueue, options) : [];
+	const coarseTested = options.speedTest ? await coarseTestCandidates(coarseQueue, options, stageProgress('coarse')) : [];
 	const coarsePassed = coarseTested.filter(item => Number.isFinite(item.coarseSpeedMbps) && item.coarseSpeedMbps >= options.coarseMinSpeed);
+	if (options.speedTest) progress(`coarsePassed=${coarsePassed.length}/${coarseQueue.length}`);
 	const speedQueue = options.speedTest ? selectFineQueue(coarsePassed, options) : subnetPool;
-	const measured = options.speedTest ? await speedTestCandidates(speedQueue, options) : subnetPool;
+	if (options.speedTest) progress(`fineQueue=${speedQueue.length}`);
+	const measured = options.speedTest ? await speedTestCandidates(speedQueue, options, stageProgress('fine', 25)) : subnetPool;
 	const speedUsable = options.speedTest ? measured.filter(item => Number.isFinite(item.localSpeedMbps)) : measured;
 	const selected = selectFinalNodes(speedUsable, options);
 	const context = { startedAt, fetched, parsed, scoped, queue, checked, usable, subnetPool, coarseQueue, coarsePassed, speedQueue, measured, speedUsable, selected, options };
@@ -231,16 +240,19 @@ function printSummary({ parsed, scoped, queue, checked, usable, subnetPool, coar
 }
 
 async function fetchSources(urls) {
-	return mapConcurrent(urls, 4, (source, sourceIndex) => fetchSource(source, sourceIndex));
+	return mapConcurrent(urls, 8, (source, sourceIndex) => fetchSource(source, sourceIndex));
 }
 
-async function mapConcurrent(items, concurrency, mapper) {
+async function mapConcurrent(items, concurrency, mapper, onProgress) {
 	const results = new Array(items.length);
 	let index = 0;
+	let completed = 0;
 	const workers = Array.from({ length: Math.max(1, concurrency) }, async () => {
 		while (index < items.length) {
 			const current = index++;
 			results[current] = await mapper(items[current], current);
+			completed++;
+			if (onProgress) onProgress(completed, items.length);
 		}
 	});
 	await Promise.all(workers);
@@ -249,9 +261,9 @@ async function mapConcurrent(items, concurrency, mapper) {
 
 async function fetchSource(url, sourceIndex) {
 	const source = normalizeSource(url);
-	for (let attempt = 1; attempt <= 3; attempt++) {
+	for (let attempt = 1; attempt <= 2; attempt++) {
 		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), 45000);
+		const timer = setTimeout(() => controller.abort(), 15000);
 		try {
 			const response = await fetch(source.url, {
 				method: source.method,
@@ -262,7 +274,7 @@ async function fetchSource(url, sourceIndex) {
 			const text = response.ok ? await response.text() : '';
 			return { ...source, sourceIndex, ok: response.ok, status: response.status, text };
 		} catch (error) {
-			if (attempt === 3) {
+			if (attempt === 2) {
 				return {
 					...source,
 					sourceIndex,
@@ -437,8 +449,8 @@ function applyStaticFilters(candidates, { countries, ports }) {
 	});
 }
 
-async function checkCandidates(candidates, { concurrency, connectTimeout, probeHost }) {
-	return mapConcurrent(candidates, concurrency, item => checkCloudflareTrace(item, connectTimeout, probeHost));
+async function checkCandidates(candidates, { concurrency, connectTimeout, probeHost }, onProgress) {
+	return mapConcurrent(candidates, concurrency, item => checkCloudflareTrace(item, connectTimeout, probeHost), onProgress);
 }
 
 function checkCloudflareTrace(candidate, timeoutMs, probeHost) {
@@ -456,6 +468,7 @@ function checkCloudflareTrace(candidate, timeoutMs, probeHost) {
 		const done = (ok, error = null) => {
 			if (finished) return;
 			finished = true;
+			clearTimeout(hardTimer);
 			socket.destroy();
 			const cfColo = extractTraceField(responseText, 'colo');
 			resolve({
@@ -468,6 +481,7 @@ function checkCloudflareTrace(candidate, timeoutMs, probeHost) {
 				error,
 			});
 		};
+		const hardTimer = setTimeout(() => done(false, 'hard-timeout'), timeoutMs * 2);
 		socket.setTimeout(timeoutMs);
 		socket.once('secureConnect', () => {
 			socket.write(`GET /cdn-cgi/trace HTTP/1.1\r\nHost: ${probeHost}\r\nUser-Agent: filtered-cf-nodes/1.0\r\nConnection: close\r\n\r\n`);
@@ -535,8 +549,8 @@ function compareProbeMs(a, b) {
 	return (a.probeMs || 9999) - (b.probeMs || 9999);
 }
 
-async function coarseTestCandidates(candidates, { coarseConcurrency, coarseTimeout, coarseBytes, probeHost }) {
-	const tested = await mapConcurrent(candidates, coarseConcurrency, item => testDownloadSpeed(item, coarseTimeout, coarseBytes, probeHost, 0));
+async function coarseTestCandidates(candidates, { coarseConcurrency, coarseTimeout, coarseBytes, probeHost }, onProgress) {
+	const tested = await mapConcurrent(candidates, coarseConcurrency, item => testDownloadSpeed(item, coarseTimeout, coarseBytes, probeHost, 0), onProgress);
 	return tested.map(({ localSpeedMbps, speedOk, speedMs, speedBytes, speedError, ...rest }) => ({
 		...rest,
 		coarseSpeedMbps: localSpeedMbps,
@@ -545,8 +559,8 @@ async function coarseTestCandidates(candidates, { coarseConcurrency, coarseTimeo
 	}));
 }
 
-async function speedTestCandidates(candidates, options) {
-	return mapConcurrent(candidates, options.speedConcurrency, item => testDownloadSpeedBest(item, options));
+async function speedTestCandidates(candidates, options, onProgress) {
+	return mapConcurrent(candidates, options.speedConcurrency, item => testDownloadSpeedBest(item, options), onProgress);
 }
 
 async function testDownloadSpeedBest(candidate, { speedSamples, speedTimeout, speedBytes, probeHost, minSpeedMs }) {
@@ -599,6 +613,7 @@ function testDownloadSpeed(candidate, timeoutMs, bytes, probeHost, minSpeedMs) {
 		const done = (ok, error = null) => {
 			if (finished) return;
 			finished = true;
+			clearTimeout(hardTimer);
 			socket.destroy();
 			const elapsedMs = Math.max(1, Date.now() - (bodyStartAt || start));
 			const localSpeedMbps = ok ? calculateLocalSpeedMbps({ bodyBytes, elapsedMs, minElapsedMs: minSpeedMs }) : null;
@@ -612,6 +627,7 @@ function testDownloadSpeed(candidate, timeoutMs, bytes, probeHost, minSpeedMs) {
 				speedError: speedOk ? error : (error || 'speed-sample-too-short'),
 			});
 		};
+		const hardTimer = setTimeout(() => done(bodyBytes > 0, bodyBytes > 0 ? null : 'hard-timeout'), timeoutMs * 2);
 		socket.setTimeout(timeoutMs);
 		socket.once('secureConnect', () => {
 			socket.write(`GET /__down?bytes=${bytes} HTTP/1.1\r\nHost: ${probeHost}\r\nUser-Agent: filtered-cf-nodes/1.0\r\nConnection: close\r\n\r\n`);
