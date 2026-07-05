@@ -11,7 +11,7 @@ permissions:
 jobs:
   filter:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -25,10 +25,7 @@ jobs:
       - name: Run offline unit tests
         run: node --test ./cf-filter-core.test.mjs
 
-      # CI 位于海外机房,本地测速对中国用户无参考价值。
-      # rank-by-source 模式:只验证节点全球可达(trace),排序信任
-      # wetest/hostmonit/090227/HandsomeMJZ 等中国三网实测源的数据。
-      - name: Filter nodes trusted by China-measured sources
+      - name: Filter high-speed balanced nodes
         run: |
           unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
           node cf-filter-local.mjs \
@@ -38,9 +35,18 @@ jobs:
             --timeout 2500 \
             --max-probe 1800 \
             --subnet-limit 1 \
-            --rank-by-source 1 \
-            --min-source-speed 10 \
-            --fallback-min-source-speed 0 \
+            --coarse-bytes 262144 \
+            --coarse-timeout 4000 \
+            --coarse-concurrency 16 \
+            --coarse-min-speed 2 \
+            --speed-scan 300 \
+            --speed-bytes 4194304 \
+            --speed-samples 2 \
+            --speed-concurrency 8 \
+            --speed-timeout 8000 \
+            --min-speed-ms 50 \
+            --min-speed 10 \
+            --fallback-min-speed 5 \
             --out filtered-best-nodes.txt \
             --json filtered-best-nodes.json
 

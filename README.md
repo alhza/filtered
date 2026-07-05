@@ -92,14 +92,9 @@ Speed-test concurrency is deliberately low (coarse 12, fine 4): higher values ma
 parallel downloads compete for your own uplink and understate every node's speed.
 --rank-by-source 1 skips local speed tests, keeps upstream country labels, and ranks
 by the speeds measured by China-side sources (wetest, hostmonit, 090227, HandsomeMJZ).
-Use it when the runner sits outside China (e.g. GitHub Actions CI): a foreign runner's
-own download speed is meaningless for mainland users, so it only verifies reachability.
-In that mode, keep the default country list to publish globally useful nodes while
-ranking them from China-side measurements. Only pass `--countries HK,JP,SG,TW,KR,TH,MY,VN,IN,AU`
-when you intentionally want an Asia-only list. Use `--min-source-speed` for the
-preferred source-speed tier. Set `--fallback-min-source-speed 0` in CI when you
-want trace-reachable nodes without a parsed upstream speed to fill the remaining
-slots after source-measured nodes.
+This mode is optional and may produce a much smaller list because many upstreams do
+not publish parseable speed fields. The GitHub workflow uses download speed testing
+by default to keep a full generic list.
 Running locally WITHOUT this flag is the gold standard: real speeds from your own line.
 --subnet-limit keeps at most N nodes per subnet before speed testing; 0 disables the dedupe.
 --coarse-scan 0 coarse-tests every reachable node after subnet dedupe; ordering uses local probe time only.
