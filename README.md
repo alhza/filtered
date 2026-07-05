@@ -96,8 +96,10 @@ Use it when the runner sits outside China (e.g. GitHub Actions CI): a foreign ru
 own download speed is meaningless for mainland users, so it only verifies reachability.
 In that mode, keep the default country list to publish globally useful nodes while
 ranking them from China-side measurements. Only pass `--countries HK,JP,SG,TW,KR,TH,MY,VN,IN,AU`
-when you intentionally want an Asia-only list. Use `--min-source-speed` /
-`--fallback-min-source-speed` for source speed thresholds.
+when you intentionally want an Asia-only list. Use `--min-source-speed` for the
+preferred source-speed tier. Set `--fallback-min-source-speed 0` in CI when you
+want trace-reachable nodes without a parsed upstream speed to fill the remaining
+slots after source-measured nodes.
 Running locally WITHOUT this flag is the gold standard: real speeds from your own line.
 --subnet-limit keeps at most N nodes per subnet before speed testing; 0 disables the dedupe.
 --coarse-scan 0 coarse-tests every reachable node after subnet dedupe; ordering uses local probe time only.

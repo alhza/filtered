@@ -40,7 +40,7 @@ jobs:
             --subnet-limit 1 \
             --rank-by-source 1 \
             --min-source-speed 10 \
-            --fallback-min-source-speed 5 \
+            --fallback-min-source-speed 0 \
             --out filtered-best-nodes.txt \
             --json filtered-best-nodes.json
 
