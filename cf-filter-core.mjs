@@ -1,5 +1,8 @@
-const DEFAULT_PORTS = ['443', '8443', '2053', '2083', '2087', '2096'];
-const DEFAULT_COUNTRIES = [
+import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
+
+export const DEFAULT_PORTS = ['443', '8443', '2053', '2083', '2087', '2096'];
+export const DEFAULT_COUNTRIES = [
 	'HK', 'JP', 'SG', 'TW', 'US', 'KR', 'DE', 'NL', 'GB', 'FR', 'FI', 'SE',
 	'CH', 'PL', 'LV', 'CA', 'AU', 'RU', 'TH', 'MY', 'VN', 'IN',
 ];
@@ -17,12 +20,121 @@ const SCORE_WEIGHTS = {
 	probeDivisor: 4,
 };
 
+const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+
+export function validateCloudflareTraceResponse(responseText, expectedHost) {
+	const response = parseHttpResponse(responseText);
+	if (!response) return { ok: false, error: 'invalid-http-response' };
+	if (response.statusCode !== 200) return { ok: false, error: `http-status-${response.statusCode}` };
+
+	const fields = Object.fromEntries(String(response.body || '')
+		.split(/\r?\n/)
+		.map(line => {
+			const separator = line.indexOf('=');
+			return separator > 0 ? [line.slice(0, separator), line.slice(separator + 1)] : null;
+		})
+		.filter(Boolean));
+	const normalizedHost = String(expectedHost || '').trim().toLowerCase();
+	if (!normalizedHost) return { ok: false, error: 'trace-host-required' };
+	if (String(fields.h || '').toLowerCase() !== normalizedHost) return { ok: false, error: 'trace-host-mismatch' };
+	if (fields.visit_scheme !== 'https') return { ok: false, error: 'trace-not-https' };
+	if (isIP(fields.ip || '') === 0) return { ok: false, error: 'trace-invalid-ip' };
+	if (!/^[A-Z]{3}$/.test(fields.colo || '')) return { ok: false, error: 'trace-invalid-colo' };
+	if (!/^TLSv1\.[23]$/.test(fields.tls || '')) return { ok: false, error: 'trace-invalid-tls' };
+	return { ok: true, statusCode: response.statusCode, fields };
+}
+
+export function validateWebSocketUpgradeResponse(responseText, key) {
+	const response = parseHttpResponse(responseText);
+	if (!response) return { ok: false, error: 'invalid-http-response' };
+	if (response.statusCode !== 101) return { ok: false, error: `http-status-${response.statusCode}` };
+	if (String(response.headers.upgrade || '').toLowerCase() !== 'websocket') return { ok: false, error: 'websocket-upgrade-missing' };
+	if (!String(response.headers.connection || '').toLowerCase().split(/\s*,\s*/).includes('upgrade')) {
+		return { ok: false, error: 'websocket-connection-missing' };
+	}
+	const expectedAccept = createHash('sha1').update(`${key}${WEBSOCKET_GUID}`).digest('base64');
+	if (response.headers['sec-websocket-accept'] !== expectedAccept) return { ok: false, error: 'websocket-accept-mismatch' };
+	return { ok: true, statusCode: response.statusCode };
+}
+
+export function aggregateProbeAttempts(attempts, requiredSuccesses = 1) {
+	const successful = attempts.filter(item => item.ok && Number.isFinite(item.probeMs));
+	const required = Math.max(1, Math.trunc(requiredSuccesses) || 1);
+	const probeMsSamples = successful.map(item => item.probeMs);
+	const ok = successful.length >= required;
+	return {
+		ok,
+		probeAttempts: attempts.length,
+		probeSuccesses: successful.length,
+		probeMs: median(probeMsSamples),
+		probeMsSamples,
+		cfColo: mostFrequent(successful.map(item => item.cfColo).filter(Boolean)),
+		cfIp: successful.findLast(item => item.cfIp)?.cfIp || '',
+		error: ok ? null : (attempts.findLast(item => item.error)?.error || `insufficient-probe-successes:${successful.length}/${required}`),
+	};
+}
+
+export function aggregateSpeedAttempts(attempts, requiredSuccesses = 1) {
+	const successful = attempts.filter(item => item.speedOk && Number.isFinite(item.localSpeedMbps));
+	const required = Math.max(1, Math.trunc(requiredSuccesses) || 1);
+	const speedSamplesMbps = successful.map(item => item.localSpeedMbps);
+	const ok = successful.length >= required;
+	return {
+		speedOk: ok,
+		speedAttempts: attempts.length,
+		speedSuccesses: successful.length,
+		speedSamplesMbps,
+		localSpeedMbps: median(speedSamplesMbps),
+		localSpeedMinMbps: speedSamplesMbps.length ? Math.min(...speedSamplesMbps) : null,
+		speedMs: median(successful.map(item => item.speedMs)),
+		speedBytes: successful.length ? Math.min(...successful.map(item => item.speedBytes)) : 0,
+		speedError: ok ? null : (attempts.findLast(item => item.speedError)?.speedError || `insufficient-speed-successes:${successful.length}/${required}`),
+	};
+}
+
+function parseHttpResponse(responseText) {
+	const text = String(responseText || '');
+	const separator = text.indexOf('\r\n\r\n');
+	if (separator === -1) return null;
+	const lines = text.slice(0, separator).split('\r\n');
+	const status = lines.shift()?.match(/^HTTP\/\d(?:\.\d)?\s+(\d{3})\b/i);
+	if (!status) return null;
+	const headers = {};
+	for (const line of lines) {
+		const colon = line.indexOf(':');
+		if (colon <= 0) continue;
+		const name = line.slice(0, colon).trim().toLowerCase();
+		const value = line.slice(colon + 1).trim();
+		headers[name] = headers[name] ? `${headers[name]}, ${value}` : value;
+	}
+	return {
+		statusCode: Number.parseInt(status[1], 10),
+		headers,
+		body: text.slice(separator + 4),
+	};
+}
+
+function median(values) {
+	const finite = values.filter(Number.isFinite).sort((a, b) => a - b);
+	if (finite.length === 0) return null;
+	const middle = Math.floor(finite.length / 2);
+	return finite.length % 2 ? finite[middle] : (finite[middle - 1] + finite[middle]) / 2;
+}
+
+function mostFrequent(values) {
+	const counts = new Map();
+	for (const value of values) counts.set(value, (counts.get(value) || 0) + 1);
+	return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+}
+
 export function selectFinalNodes(candidates, options) {
-	return selectPriorityFill(candidates, {
+	const fallbackMinSpeed = options.fallbackMinSpeed ?? options.minKeepSpeed;
+	const stableCandidates = candidates.filter(item => !Number.isFinite(item.localSpeedMinMbps) || item.localSpeedMinMbps >= fallbackMinSpeed);
+	return selectPriorityFill(stableCandidates, {
 		targetSize: options.limit,
 		maxSize: options.limit,
 		minKeepSpeed: options.minKeepSpeed,
-		fallbackMinSpeed: options.fallbackMinSpeed ?? options.minKeepSpeed,
+		fallbackMinSpeed,
 		strictMinSpeed: options.strictMinSpeed !== false,
 		balanced: options.balanced,
 		countries: options.countries,
@@ -103,7 +215,11 @@ function candidateKey(item) {
 	return `${item.host}:${item.port}`;
 }
 
-function compareCheckedScore(a, b) {
+export function compareCandidateScore(a, b) {
+	return scoreCandidate(b) - scoreCandidate(a);
+}
+
+export function compareCheckedScore(a, b) {
 	const scoreCompare = scoreChecked(b) - scoreChecked(a);
 	if (scoreCompare) return scoreCompare;
 	return (a.probeMs || 9999) - (b.probeMs || 9999);
@@ -128,7 +244,7 @@ function orderedBonus(value, orderedValues, base, step) {
 	return index === -1 ? 0 : Math.max(0, base - index * step);
 }
 
-function measuredSpeedMbps(item) {
+export function measuredSpeedMbps(item) {
 	if (Number.isFinite(item.localSpeedMbps)) return item.localSpeedMbps;
 	if (Number.isFinite(item.speedMbps)) return item.speedMbps;
 	return 0;

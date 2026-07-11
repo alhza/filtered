@@ -8,10 +8,18 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: filter-cloudflare-nodes
+  cancel-in-progress: false
+
 jobs:
   filter:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
+    env:
+      CF_TRACE_HOST: ${{ vars.CF_TRACE_HOST }}
+      EDGETUNNEL_HOST: ${{ vars.EDGETUNNEL_HOST }}
+      EDGETUNNEL_PATH: ${{ secrets.EDGETUNNEL_PATH }}
 
     steps:
       - name: Checkout
@@ -25,21 +33,44 @@ jobs:
       - name: Run offline unit tests
         run: node --test ./cf-filter-core.test.mjs
 
+      - name: Show verification mode
+        shell: bash
+        run: |
+          if [[ -n "$EDGETUNNEL_HOST" && -n "$EDGETUNNEL_PATH" ]]; then
+            echo "Using verified Cloudflare trace plus EdgeTunnel WebSocket checks."
+          elif [[ -n "$EDGETUNNEL_HOST" ]]; then
+            echo "Using verified Cloudflare trace for the configured EdgeTunnel host."
+          elif [[ -n "$CF_TRACE_HOST" ]]; then
+            echo "Using verified Cloudflare trace for the configured host."
+          else
+            echo "Using verified Cloudflare trace for speed.cloudflare.com."
+          fi
+
       - name: Filter high-speed balanced nodes
         run: |
           node cf-filter-local.mjs \
             --limit 150 \
-            --scan 5000 \
+            --scan 3000 \
             --concurrency 120 \
             --timeout 2500 \
-            --max-probe 1800 \
-            --speed-scan 200 \
-            --speed-bytes 1048576 \
+            --max-probe 1200 \
+            --probe-attempts 3 \
+            --min-probe-successes 2 \
+            --speed-scan 180 \
+            --speed-bytes 4194304 \
             --speed-concurrency 8 \
-            --speed-timeout 8000 \
-            --min-speed-ms 50 \
+            --speed-timeout 12000 \
+            --speed-attempts 3 \
+            --min-speed-successes 2 \
+            --min-speed-ms 100 \
             --min-speed 10 \
             --fallback-min-speed 5 \
+            --strict-min-speed 1 \
+            --edge-attempts 3 \
+            --min-edge-successes 2 \
+            --edge-concurrency 16 \
+            --min-source-successes 2 \
+            --min-output 20 \
             --out filtered-best-nodes.txt \
             --json filtered-best-nodes.json
 

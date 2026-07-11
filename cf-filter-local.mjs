@@ -1,79 +1,28 @@
+import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import tls from 'node:tls';
 import {
+	aggregateProbeAttempts,
+	aggregateSpeedAttempts,
 	calculateLocalSpeedMbps,
-	selectFinalNodes as selectFinalNodesStrict,
+	compareCandidateScore,
+	compareCheckedScore,
+	DEFAULT_COUNTRIES,
+	DEFAULT_PORTS,
+	isHighSpeed,
+	measuredSpeedMbps,
+	selectFinalNodes,
+	selectPriorityFill,
+	validateCloudflareTraceResponse,
+	validateWebSocketUpgradeResponse,
 } from './cf-filter-core.mjs';
 
 const SOURCES = [
-	'https://raw.githubusercontent.com/weduolijia/-CF-IP/main/top10.txt',
-	'https://raw.githubusercontent.com/vipmc838/cf_best_ip/main/cloudflare_bestip.txt',
-	'https://raw.githubusercontent.com/gslege/CloudflareIP/main/All.txt',
 	'https://ips.gaoji.uk/best_ips.txt',
-	'https://raw.githubusercontent.com/svip-s/cloudflare_ip/refs/heads/main/best_ips.txt',
 	'https://raw.githubusercontent.com/love-ztm/cfip/refs/heads/main/best_ips.txt',
-	'https://raw.githubusercontent.com/gshtwy/CF-DNS-Clone/main/wetest-cloudflare-v4.txt',
-	'https://raw.githubusercontent.com/yuanxiawan/cfipv4db/main/cfip.txt',
-	'https://raw.githubusercontent.com/joname1/BestCFip/main/ipv4.txt',
-	'https://raw.githubusercontent.com/Senflare/Senflare-IP/main/IPlist-Pro.txt',
-	'https://raw.githubusercontent.com/einsitang/my-fast-cf-ip/master/fastips.txt',
-	'https://raw.githubusercontent.com/hubbylei/bestcf/main/bestcf.txt',
-	'https://raw.githubusercontent.com/ymyuuu/IPDB/main/BestCF/bestcfv4.txt',
-	'https://raw.githubusercontent.com/HandsomeMJZ/cfip/main/best_ips.txt',
 	'https://raw.githubusercontent.com/HandsomeMJZ/cfip/main/full_ips.txt',
-	'https://raw.githubusercontent.com/lu-lingyun/CloudflareST/main/TLS.txt',
-	'https://raw.githubusercontent.com/lu-lingyun/CloudflareST/main/open_ips.txt',
-	'https://bestcf.pages.dev/uouin/all.txt',
 	'https://zip.cm.edu.kg/all.txt',
-	'https://addressesapi.090227.xyz/CloudFlareYes',
-	'https://addressesapi.090227.xyz/cmcc-ipv6',
-	'https://cf.090227.xyz/ct?ips=6',
-	'https://cf.090227.xyz/cu',
-	{
-		url: 'https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v4',
-		parser: 'wetest',
-	},
-	{
-		url: 'https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v6',
-		parser: 'wetest',
-	},
-	{
-		url: 'https://api.hostmonit.com/get_optimization_ip',
-		parser: 'hostmonit',
-		method: 'POST',
-		body: { key: 'iDetkOys' },
-	},
-	{
-		url: 'https://api.hostmonit.com/get_optimization_ip',
-		parser: 'hostmonit',
-		method: 'POST',
-		body: { key: 'iDetkOys', type: 'v6' },
-	},
-	'https://addressesapi.090227.xyz/ct',
-	'https://addressesapi.090227.xyz/cmcc',
-	'https://cf.090227.xyz/ct',
-	'https://cdn.jsdelivr.net/gh/HandsomeMJZ/cfip@main/best_ips.txt',
-	'https://cdn.jsdelivr.net/gh/HandsomeMJZ/cfip@main/full_ips.txt',
-	'https://cdn.jsdelivr.net/gh/ymyuuu/IPDB@main/BestCF/bestcfv6.txt',
-	{
-		url: 'https://ip.164746.xyz/ipTop10.html',
-		parser: 'iplist',
-	},
 ];
-
-const DEFAULT_PORTS = ['443', '8443', '2053', '2083', '2087', '2096'];
-const SCORE_WEIGHTS = {
-	speed: 120,
-	metrics: 320,
-	countryBase: 240,
-	countryStep: 6,
-	portBase: 120,
-	portStep: 8,
-	sourceBase: 90,
-	sourceStep: 12,
-	latencyDivisor: 8,
-	probeDivisor: 4,
-};
 
 const COLO_COUNTRY = {
 	HKG: 'HK', NRT: 'JP', KIX: 'JP', FUK: 'JP', SIN: 'SG', TPE: 'TW', ICN: 'KR',
@@ -109,25 +58,37 @@ const COUNTRY_LABELS = {
 	VN: '越南',
 	IN: '印度',
 };
-const DEFAULT_COUNTRIES = Object.keys(COUNTRY_LABELS);
-
 const args = parseArgs(process.argv.slice(2));
 const minKeepSpeed = numberArg(args.minSpeed ?? args['min-speed'], 10);
+const edgeHost = firstText(args.edgeHost, args['edge-host'], process.env.EDGETUNNEL_HOST);
+const edgePath = normalizePath(firstText(args.edgePath, args['edge-path'], process.env.EDGETUNNEL_PATH));
 const options = {
 	limit: numberArg(args.limit, 150),
 	scan: numberArg(args.scan, 4000),
 	connectTimeout: numberArg(args.timeout, 1600),
 	maxProbe: numberArg(args.maxProbe ?? args['max-probe'] ?? args.maxTcp ?? args['max-tcp'], 1200),
+	probeAttempts: positiveNumberArg(args.probeAttempts ?? args['probe-attempts'], 3),
+	minProbeSuccesses: positiveNumberArg(args.minProbeSuccesses ?? args['min-probe-successes'], 2),
 	minKeepSpeed,
 	fallbackMinSpeed: numberArg(args.fallbackMinSpeed ?? args['fallback-min-speed'], minKeepSpeed),
-	probeHost: args.probeHost || args['probe-host'] || 'speed.cloudflare.com',
+	traceHost: firstText(args.traceHost, args['trace-host'], edgeHost, process.env.CF_TRACE_HOST, args.probeHost, args['probe-host']) || 'speed.cloudflare.com',
+	speedHost: firstText(args.speedHost, args['speed-host'], process.env.CF_SPEED_HOST) || 'speed.cloudflare.com',
+	edgeHost,
+	edgePath,
+	edgeAttempts: positiveNumberArg(args.edgeAttempts ?? args['edge-attempts'], 3),
+	minEdgeSuccesses: positiveNumberArg(args.minEdgeSuccesses ?? args['min-edge-successes'], 2),
 	speedTest: args.speedTest !== '0' && args['speed-test'] !== '0',
 	speedScan: numberArg(args.speedScan ?? args['speed-scan'], 200),
 	speedBytes: numberArg(args.speedBytes ?? args['speed-bytes'], 1024 * 1024),
 	speedTimeout: numberArg(args.speedTimeout ?? args['speed-timeout'], 6000),
+	speedAttempts: positiveNumberArg(args.speedAttempts ?? args['speed-attempts'], 3),
+	minSpeedSuccesses: positiveNumberArg(args.minSpeedSuccesses ?? args['min-speed-successes'], 2),
 	minSpeedMs: numberArg(args.minSpeedMs ?? args['min-speed-ms'], 50),
 	concurrency: numberArg(args.concurrency, 120),
 	speedConcurrency: numberArg(args.speedConcurrency ?? args['speed-concurrency'], 8),
+	edgeConcurrency: numberArg(args.edgeConcurrency ?? args['edge-concurrency'], 16),
+	minSourceSuccesses: positiveNumberArg(args.minSourceSuccesses ?? args['min-source-successes'], 2),
+	minOutput: numberArg(args.minOutput ?? args['min-output'], 1),
 	countries: listArg(args.countries, DEFAULT_COUNTRIES, true),
 	ports: listArg(args.ports, DEFAULT_PORTS, false),
 	balanced: args.balanced !== '0',
@@ -136,21 +97,32 @@ const options = {
 	json: args.json || 'filtered-best-nodes.json',
 };
 
+validateOptions(options);
 await run();
 
 async function run() {
 	const startedAt = Date.now();
 	const fetched = await fetchSources(SOURCES);
-	const parsed = dedupeCandidates(fetched.flatMap(source => parseSource(source)));
+	const sourceSuccesses = fetched.filter(source => source.ok).length;
+	if (sourceSuccesses < options.minSourceSuccesses) {
+		throw new Error(`Only ${sourceSuccesses}/${SOURCES.length} upstream sources succeeded; refusing to replace published nodes.`);
+	}
+	const parsed = dedupeCandidates(fetched.flatMap(source => source.ok ? parseTextSource(source) : []));
 	const scoped = applyStaticFilters(parsed, options);
 	const queue = selectCheckQueue(scoped, options);
 	const checked = await checkCandidates(queue, options);
 	const usable = filterUsableChecked(checked, options);
-	const speedQueue = options.speedTest ? selectSpeedQueue(usable, options) : usable;
-	const measured = options.speedTest ? await speedTestCandidates(speedQueue, options) : usable;
-	const speedUsable = options.speedTest ? measured.filter(item => Number.isFinite(item.localSpeedMbps)) : measured;
+	const edgeEnabled = Boolean(options.edgeHost && options.edgePath);
+	const speedQueue = options.speedTest || edgeEnabled ? selectSpeedQueue(usable, options) : usable;
+	const edgeChecked = edgeEnabled ? await checkEdgeCandidates(speedQueue, options) : [];
+	const edgeUsable = edgeEnabled ? edgeChecked.filter(item => item.edgeOk) : speedQueue;
+	const measured = options.speedTest ? await speedTestCandidates(edgeUsable, options) : edgeUsable;
+	const speedUsable = options.speedTest ? measured.filter(item => item.speedOk) : measured;
 	const selected = selectFinalNodes(speedUsable, options);
-	const context = { startedAt, fetched, parsed, scoped, queue, checked, usable, speedQueue, measured, speedUsable, selected, options };
+	if (selected.length < options.minOutput) {
+		throw new Error(`Only ${selected.length} nodes passed; minimum output is ${options.minOutput}. Previous published results remain unchanged.`);
+	}
+	const context = { startedAt, fetched, parsed, scoped, queue, checked, usable, speedQueue, edgeEnabled, edgeChecked, edgeUsable, measured, speedUsable, selected, options };
 
 	await writeOutputs(context);
 	printSummary(context);
@@ -161,25 +133,29 @@ async function writeOutputs(context) {
 	await fs.writeFile(context.options.json, JSON.stringify(buildReport(context), null, 2), 'utf8');
 }
 
-function buildReport({ startedAt, fetched, parsed, scoped, queue, checked, usable, speedQueue, measured, speedUsable, selected, options }) {
+function buildReport({ startedAt, fetched, parsed, scoped, queue, checked, usable, speedQueue, edgeEnabled, edgeChecked, edgeUsable, measured, speedUsable, selected, options }) {
 	return {
 		generatedAt: new Date().toISOString(),
 		elapsedMs: Date.now() - startedAt,
 		sources: fetched.map(formatSourceSummary),
-		options,
-		stats: buildStats({ parsed, scoped, queue, checked, usable, speedQueue, measured, speedUsable, selected, options }),
+		options: publicOptions(options),
+		stats: buildStats({ parsed, scoped, queue, checked, usable, speedQueue, edgeEnabled, edgeChecked, edgeUsable, measured, speedUsable, selected, options }),
 		nodes: selected,
 	};
 }
 
-function buildStats({ parsed, scoped, queue, checked, usable, speedQueue, measured, speedUsable, selected, options }) {
+function buildStats({ parsed, scoped, queue, checked, usable, speedQueue, edgeEnabled, edgeChecked, edgeUsable, measured, speedUsable, selected, options }) {
 	return {
 		parsed: parsed.length,
 		scoped: scoped.length,
 		queued: queue.length,
 		checked: checked.length,
 		usable: usable.length,
-		speedQueued: speedQueue.length,
+		edgeEnabled,
+		edgeQueued: edgeEnabled ? speedQueue.length : 0,
+		edgeChecked: edgeChecked.length,
+		edgeUsable: edgeEnabled ? edgeUsable.length : 0,
+		speedQueued: edgeUsable.length,
 		speedTested: measured.length,
 		speedUsable: speedUsable.length,
 		selected: selected.length,
@@ -204,8 +180,8 @@ function formatSourceSummary(item) {
 	};
 }
 
-function printSummary({ parsed, scoped, queue, checked, usable, speedQueue, speedUsable, selected, options }) {
-	console.log(`parsed=${parsed.length} scoped=${scoped.length} queued=${queue.length} checked=${checked.length} usable=${usable.length} speedQueued=${speedQueue.length} speedUsable=${speedUsable.length} selected=${selected.length}`);
+function printSummary({ parsed, scoped, queue, checked, usable, edgeEnabled, edgeUsable, speedUsable, selected, options }) {
+	console.log(`parsed=${parsed.length} scoped=${scoped.length} queued=${queue.length} checked=${checked.length} usable=${usable.length} edge=${edgeEnabled ? edgeUsable.length : 'disabled'} speedQueued=${edgeUsable.length} speedUsable=${speedUsable.length} selected=${selected.length}`);
 	console.log(`highSpeed>${options.minKeepSpeed}Mbps queued=${queue.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} usable=${speedUsable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} selected=${selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length}`);
 	console.log(`fallback>=${options.fallbackMinSpeed}Mbps selected=${selected.filter(item => !isHighSpeed(item, options.minKeepSpeed) && isHighSpeed(item, options.fallbackMinSpeed)).length}`);
 	console.log(`countries=${JSON.stringify(countBy(selected, 'country'))}`);
@@ -233,16 +209,19 @@ async function mapConcurrent(items, concurrency, mapper) {
 }
 
 async function fetchSource(url, sourceIndex) {
-	const source = normalizeSource(url);
+	const source = {
+		url,
+		parser: 'text',
+		method: 'GET',
+		headers: { 'User-Agent': 'filtered-cf-nodes/1.0' },
+	};
 	for (let attempt = 1; attempt <= 3; attempt++) {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), 45000);
 		try {
 			const response = await fetch(source.url, {
-				method: source.method,
 				signal: controller.signal,
 				headers: source.headers,
-				body: source.body ? JSON.stringify(source.body) : undefined,
 			});
 			const text = response.ok ? await response.text() : '';
 			return { ...source, sourceIndex, ok: response.ok, status: response.status, text };
@@ -263,53 +242,6 @@ async function fetchSource(url, sourceIndex) {
 	}
 }
 
-function normalizeSource(source) {
-	if (typeof source === 'string') {
-		return {
-			url: source,
-			parser: 'text',
-			method: 'GET',
-			headers: { 'User-Agent': 'filtered-cf-nodes/1.0' },
-		};
-	}
-	const method = source.method || 'GET';
-	return {
-		...source,
-		parser: source.parser || 'text',
-		method,
-		headers: {
-			'User-Agent': 'filtered-cf-nodes/1.0',
-			...(source.body ? { 'Content-Type': 'application/json' } : {}),
-			...(source.headers || {}),
-		},
-	};
-}
-
-function parseSource(source) {
-	if (!source.ok) return [];
-	if (source.parser === 'wetest') return parseWeTestSource(source);
-	if (source.parser === 'hostmonit') return parseHostMonitSource(source);
-	if (source.parser === 'iplist') return parseIpListSource(source);
-	return parseTextSource(source);
-}
-
-function parseIpListSource({ text, url, sourceIndex }) {
-	const rows = [];
-	for (const token of extractEndpointTokens(text)) {
-		const row = parseLine(token, url, sourceIndex);
-		if (row) rows.push(row);
-	}
-	return rows;
-}
-
-function extractEndpointTokens(text) {
-	const tokens = [];
-	const input = String(text || '');
-	const endpointPattern = /(?:\[[0-9a-fA-F:]{6,}\]|(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])|(?<![0-9a-fA-F:])(?:[0-9a-fA-F]{1,4}:){2,}[0-9a-fA-F]{1,4}(?![0-9a-fA-F:]))(?::\d{2,5})?(?:#[^\s<>,;"']+)?/g;
-	for (const match of input.matchAll(endpointPattern)) tokens.push(match[0]);
-	return tokens;
-}
-
 function parseTextSource({ text, url, sourceIndex }) {
 	const rows = [];
 	for (const rawLine of String(text || '').split(/\r?\n/)) {
@@ -317,70 +249,6 @@ function parseTextSource({ text, url, sourceIndex }) {
 		if (row) rows.push(row);
 	}
 	return rows;
-}
-
-function parseWeTestSource({ text, url, sourceIndex }) {
-	const data = parseJson(text);
-	const groups = data?.info && typeof data.info === 'object' ? Object.entries(data.info) : [];
-	return groups.flatMap(([group, items]) => Array.isArray(items)
-		? items.map(item => makeStructuredCandidate({
-			host: item.ip,
-			country: COLO_COUNTRY[item.colo] || '',
-			remark: `${item.line_name || group}-${item.colo || 'CF'}`,
-			sourceUrl: url,
-			sourceIndex,
-			latencyMs: numberOrNull(item.rtt_avg),
-			speedMbps: numberOrNull(item.bandwidth) ?? speedToMbps(numberOrNull(item.speed), 'KB/S'),
-			meta: {
-				sourceType: 'wetest',
-				line: item.line,
-				lineName: item.line_name,
-				cfColo: item.colo,
-				lossRate: numberOrNull(item.loss_rate),
-				updatedAt: item.updated_at || null,
-			},
-		})).filter(Boolean)
-		: []);
-}
-
-function parseHostMonitSource({ text, url, sourceIndex }) {
-	const data = parseJson(text);
-	const items = Array.isArray(data?.info) ? data.info : [];
-	return items.map(item => makeStructuredCandidate({
-		host: item.ip,
-		country: COLO_COUNTRY[item.colo] || '',
-		remark: `${item.line || 'CF'}-${item.colo || item.node || 'Default'}`,
-		sourceUrl: url,
-		sourceIndex,
-		latencyMs: numberOrNull(item.latency),
-		speedMbps: speedToMbps(numberOrNull(item.speed), 'KB/S'),
-		meta: {
-			sourceType: 'hostmonit',
-			line: item.line,
-			node: item.node,
-			cfColo: item.colo,
-			lossRate: numberOrNull(item.loss),
-			updatedAt: item.time || null,
-		},
-	})).filter(Boolean);
-}
-
-function makeStructuredCandidate({ host, country, remark, sourceUrl, sourceIndex, latencyMs, speedMbps, meta }) {
-	if (!host) return null;
-	const port = '443';
-	const cleanHost = String(host).replace(/^\[|\]$/g, '').trim();
-	return {
-		host: cleanHost,
-		port,
-		country,
-		remark,
-		sourceUrl,
-		sourceIndex,
-		latencyMs,
-		speedMbps,
-		line: `${formatEndpoint({ host: cleanHost, port })}#${remark || country || sourceHost(sourceUrl)}`,
-		...meta,
-	};
 }
 
 function parseLine(rawLine, sourceUrl, sourceIndex) {
@@ -430,58 +298,77 @@ function applyStaticFilters(candidates, { countries, ports }) {
 	});
 }
 
-async function checkCandidates(candidates, { concurrency, connectTimeout, probeHost }) {
-	return mapConcurrent(candidates, concurrency, item => checkCloudflareTrace(item, connectTimeout, probeHost));
+async function checkCandidates(candidates, options) {
+	return mapConcurrent(candidates, options.concurrency, item => checkCloudflareTrace(item, options));
 }
 
-function checkCloudflareTrace(candidate, timeoutMs, probeHost) {
+async function checkCloudflareTrace(candidate, options) {
+	const attempts = [];
+	for (let attempt = 0; attempt < options.probeAttempts; attempt++) {
+		attempts.push(await probeCloudflareTraceOnce(candidate, options.connectTimeout, options.traceHost));
+	}
+	const summary = aggregateProbeAttempts(attempts, options.minProbeSuccesses);
+	return {
+		...candidate,
+		...summary,
+		country: COLO_COUNTRY[summary.cfColo] || candidate.country || '',
+	};
+}
+
+function publicOptions(options) {
+	const { edgePath, ...safeOptions } = options;
+	return {
+		...safeOptions,
+		edgePathConfigured: Boolean(edgePath),
+	};
+}
+
+function probeCloudflareTraceOnce(candidate, timeoutMs, traceHost) {
 	return new Promise(resolve => {
 		const start = Date.now();
 		const socket = tls.connect({
 			host: candidate.host,
 			port: Number(candidate.port),
-			servername: probeHost,
-			rejectUnauthorized: false,
+			servername: traceHost,
+			rejectUnauthorized: true,
+			minVersion: 'TLSv1.2',
 			ALPNProtocols: ['http/1.1'],
 		});
 		let responseText = '';
 		let finished = false;
-		const done = (ok, error = null) => {
+		const done = result => {
 			if (finished) return;
 			finished = true;
 			socket.destroy();
-			const cfColo = extractTraceField(responseText, 'colo');
-			resolve({
-				...candidate,
-				ok,
-				probeMs: Date.now() - start,
-				country: COLO_COUNTRY[cfColo] || candidate.country || '',
-				cfColo,
-				cfIp: extractTraceField(responseText, 'ip'),
-				error,
-			});
+			resolve({ probeMs: Date.now() - start, ...result });
+		};
+		const finishResponse = () => {
+			const validation = validateCloudflareTraceResponse(responseText, traceHost);
+			done(validation.ok
+				? { ok: true, cfColo: validation.fields.colo, cfIp: validation.fields.ip, error: null }
+				: { ok: false, cfColo: '', cfIp: '', error: validation.error });
 		};
 		socket.setTimeout(timeoutMs);
 		socket.once('secureConnect', () => {
-			socket.write(`GET /cdn-cgi/trace HTTP/1.1\r\nHost: ${probeHost}\r\nUser-Agent: filtered-cf-nodes/1.0\r\nConnection: close\r\n\r\n`);
+			socket.write(`GET /cdn-cgi/trace HTTP/1.1\r\nHost: ${traceHost}\r\nUser-Agent: filtered-cf-nodes/1.0\r\nAccept: text/plain\r\nConnection: close\r\n\r\n`);
 		});
 		socket.on('data', chunk => {
 			responseText += chunk.toString('utf8');
-			if (responseText.includes('\ncolo=') && responseText.includes('\nip=')) done(true);
-			else if (responseText.length > 8192) done(false, 'invalid-trace');
+			const validation = validateCloudflareTraceResponse(responseText, traceHost);
+			if (validation.ok) finishResponse();
+			else if (responseText.length > 32768) done({ ok: false, cfColo: '', cfIp: '', error: 'trace-response-too-large' });
 		});
-		socket.once('end', () => {
-			const ok = responseText.includes('\ncolo=') && responseText.includes('\nip=');
-			done(ok, ok ? null : 'no-cloudflare-trace');
-		});
-		socket.once('timeout', () => done(false, 'timeout'));
-		socket.once('error', error => done(false, error.code || error.message));
+		socket.once('end', finishResponse);
+		socket.once('timeout', () => done({ ok: false, cfColo: '', cfIp: '', error: 'timeout' }));
+		socket.once('error', error => done({ ok: false, cfColo: '', cfIp: '', error: error.code || error.message }));
 	});
 }
 
 function selectCheckQueue(candidates, options) {
+	const queueSize = Math.max(options.scan, options.limit);
 	return selectPriorityFill(candidates, {
-		targetSize: Math.max(options.scan, options.limit),
+		targetSize: queueSize,
+		maxSize: queueSize,
 		minKeepSpeed: options.minKeepSpeed,
 		balanced: options.balanced,
 		countries: options.countries,
@@ -497,54 +384,112 @@ function filterUsableChecked(items, { countries, maxProbe }) {
 	});
 }
 
-function selectFinalNodes(candidates, options) {
-	return selectFinalNodesStrict(candidates, options);
-}
-
 function selectSpeedQueue(candidates, options) {
+	const queueSize = Math.max(options.speedScan, options.limit);
 	return selectPriorityFill(candidates, {
-		targetSize: Math.max(options.speedScan, options.limit),
+		targetSize: queueSize,
+		maxSize: queueSize,
 		minKeepSpeed: options.minKeepSpeed,
 		balanced: options.balanced,
 		countries: options.countries,
 		compareFn: compareCheckedScore,
 	});
 }
-
-function selectPriorityFill(candidates, { targetSize, minKeepSpeed, balanced, countries, compareFn, maxSize = Infinity }) {
-	const selected = new Map();
-	const highSpeed = candidates
-		.filter(item => isHighSpeed(item, minKeepSpeed))
-		.sort(compareFn);
-	for (const item of highSpeed) {
-		if (selected.size >= maxSize) break;
-		selected.set(candidateKey(item), item);
-	}
-
-	const rest = candidates.filter(item => !selected.has(candidateKey(item)));
-	const fillLimit = Math.max(0, Math.min(targetSize, maxSize) - selected.size);
-	const fill = balanced
-		? balancedTake(groupAndSort(rest, compareFn), fillLimit, countries)
-		: rest.sort(compareFn).slice(0, fillLimit);
-	for (const item of fill) {
-		if (selected.size >= maxSize) break;
-		selected.set(candidateKey(item), item);
-	}
-	return [...selected.values()];
+async function checkEdgeCandidates(candidates, options) {
+	return mapConcurrent(candidates, options.edgeConcurrency, item => checkEdgeTunnel(item, options));
 }
 
-async function speedTestCandidates(candidates, { speedConcurrency, speedTimeout, speedBytes, probeHost, minSpeedMs }) {
-	return mapConcurrent(candidates, speedConcurrency, item => testDownloadSpeed(item, speedTimeout, speedBytes, probeHost, minSpeedMs));
+async function checkEdgeTunnel(candidate, options) {
+	const attempts = [];
+	for (let attempt = 0; attempt < options.edgeAttempts; attempt++) {
+		attempts.push(await probeWebSocketUpgradeOnce(candidate, options));
+	}
+	const summary = aggregateProbeAttempts(attempts, options.minEdgeSuccesses);
+	return {
+		...candidate,
+		edgeOk: summary.ok,
+		edgeAttempts: summary.probeAttempts,
+		edgeSuccesses: summary.probeSuccesses,
+		edgeMs: summary.probeMs,
+		edgeMsSamples: summary.probeMsSamples,
+		edgeError: summary.error,
+	};
 }
 
-function testDownloadSpeed(candidate, timeoutMs, bytes, probeHost, minSpeedMs) {
+function probeWebSocketUpgradeOnce(candidate, options) {
 	return new Promise(resolve => {
 		const start = Date.now();
 		const socket = tls.connect({
 			host: candidate.host,
 			port: Number(candidate.port),
-			servername: probeHost,
-			rejectUnauthorized: false,
+			servername: options.edgeHost,
+			rejectUnauthorized: true,
+			minVersion: 'TLSv1.2',
+			ALPNProtocols: ['http/1.1'],
+		});
+		const key = randomBytes(16).toString('base64');
+		let responseText = '';
+		let finished = false;
+		const done = (ok, error = null) => {
+			if (finished) return;
+			finished = true;
+			socket.destroy();
+			resolve({ ok, probeMs: Date.now() - start, error });
+		};
+		socket.setTimeout(options.connectTimeout);
+		socket.once('secureConnect', () => {
+			socket.write([
+				`GET ${options.edgePath} HTTP/1.1`,
+				`Host: ${options.edgeHost}`,
+				`Origin: https://${options.edgeHost}`,
+				'Upgrade: websocket',
+				'Connection: Upgrade',
+				`Sec-WebSocket-Key: ${key}`,
+				'Sec-WebSocket-Version: 13',
+				'User-Agent: filtered-cf-nodes/1.0',
+				'',
+				'',
+			].join('\r\n'));
+		});
+		socket.on('data', chunk => {
+			responseText += chunk.toString('utf8');
+			if (!responseText.includes('\r\n\r\n')) {
+				if (responseText.length > 32768) done(false, 'websocket-response-too-large');
+				return;
+			}
+			const validation = validateWebSocketUpgradeResponse(responseText, key);
+			done(validation.ok, validation.ok ? null : validation.error);
+		});
+		socket.once('end', () => done(false, 'websocket-closed-before-upgrade'));
+		socket.once('timeout', () => done(false, 'timeout'));
+		socket.once('error', error => done(false, error.code || error.message));
+	});
+}
+
+async function speedTestCandidates(candidates, options) {
+	return mapConcurrent(candidates, options.speedConcurrency, item => testDownloadSpeed(item, options));
+}
+
+async function testDownloadSpeed(candidate, options) {
+	const attempts = [];
+	for (let attempt = 0; attempt < options.speedAttempts; attempt++) {
+		attempts.push(await testDownloadSpeedOnce(candidate, options));
+	}
+	return {
+		...candidate,
+		...aggregateSpeedAttempts(attempts, options.minSpeedSuccesses),
+	};
+}
+
+function testDownloadSpeedOnce(candidate, options) {
+	return new Promise(resolve => {
+		const start = Date.now();
+		const socket = tls.connect({
+			host: candidate.host,
+			port: Number(candidate.port),
+			servername: options.speedHost,
+			rejectUnauthorized: true,
+			minVersion: 'TLSv1.2',
 			ALPNProtocols: ['http/1.1'],
 		});
 		let bodyBytes = 0;
@@ -557,110 +502,47 @@ function testDownloadSpeed(candidate, timeoutMs, bytes, probeHost, minSpeedMs) {
 			finished = true;
 			socket.destroy();
 			const elapsedMs = Math.max(1, Date.now() - (bodyStartAt || start));
-			const localSpeedMbps = ok ? calculateLocalSpeedMbps({ bodyBytes, elapsedMs, minElapsedMs: minSpeedMs }) : null;
+			const localSpeedMbps = ok ? calculateLocalSpeedMbps({ bodyBytes, elapsedMs, minElapsedMs: options.minSpeedMs }) : null;
 			const speedOk = ok && Number.isFinite(localSpeedMbps);
 			resolve({
-				...candidate,
 				speedOk,
 				speedMs: elapsedMs,
 				speedBytes: bodyBytes,
 				localSpeedMbps,
-				speedError: speedOk ? error : (error || 'speed-sample-too-short'),
+				speedError: speedOk ? null : (error || 'speed-sample-too-short'),
 			});
 		};
-		socket.setTimeout(timeoutMs);
+		socket.setTimeout(options.speedTimeout);
 		socket.once('secureConnect', () => {
-			socket.write(`GET /__down?bytes=${bytes} HTTP/1.1\r\nHost: ${probeHost}\r\nUser-Agent: filtered-cf-nodes/1.0\r\nConnection: close\r\n\r\n`);
+			socket.write(`GET /__down?bytes=${options.speedBytes}&nonce=${randomUUID()} HTTP/1.1\r\nHost: ${options.speedHost}\r\nUser-Agent: filtered-cf-nodes/1.0\r\nAccept: application/octet-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n`);
 		});
 		socket.on('data', chunk => {
 			if (headerDone) {
-				if (!bodyStartAt) bodyStartAt = Date.now();
 				bodyBytes += chunk.length;
 			} else {
 				buffer = Buffer.concat([buffer, chunk]);
 				const headerEnd = buffer.indexOf('\r\n\r\n');
 				if (headerEnd !== -1) {
+					const statusCode = parseHttpStatusCode(buffer.subarray(0, headerEnd).toString('utf8'));
+					if (statusCode !== 200) {
+						done(false, statusCode ? `http-status-${statusCode}` : 'invalid-http-response');
+						return;
+					}
 					headerDone = true;
 					bodyStartAt = Date.now();
 					bodyBytes += buffer.length - headerEnd - 4;
 					buffer = null;
+				} else if (buffer.length > 65536) {
+					done(false, 'download-headers-too-large');
+					return;
 				}
 			}
-			if (bodyBytes >= bytes) done(true);
+			if (bodyBytes >= options.speedBytes) done(true);
 		});
-		socket.once('end', () => done(bodyBytes > 0, bodyBytes > 0 ? null : 'no-download-body'));
-		socket.once('timeout', () => done(bodyBytes > 0, bodyBytes > 0 ? null : 'speed-timeout'));
+		socket.once('end', () => done(false, `incomplete-download:${bodyBytes}/${options.speedBytes}`));
+		socket.once('timeout', () => done(false, 'speed-timeout'));
 		socket.once('error', error => done(false, error.code || error.message));
 	});
-}
-
-function groupAndSort(items, compareFn) {
-	const groups = new Map();
-	for (const item of items) {
-		const key = item.country || 'ZZ';
-		if (!groups.has(key)) groups.set(key, []);
-		groups.get(key).push(item);
-	}
-	for (const list of groups.values()) list.sort(compareFn);
-	return groups;
-}
-
-function balancedTake(groups, limit, preferredCountries) {
-	const order = [
-		...preferredCountries.filter(country => groups.has(country)),
-		...Array.from(groups.keys()).filter(country => !preferredCountries.includes(country)).sort(),
-	];
-	const result = [];
-	let cursor = 0;
-	while (result.length < limit && order.length > 0) {
-		const country = order[cursor % order.length];
-		const list = groups.get(country);
-		if (!list || list.length === 0) {
-			order.splice(cursor % order.length, 1);
-			cursor = 0;
-			continue;
-		}
-		result.push(list.shift());
-		cursor++;
-	}
-	return result;
-}
-
-function isHighSpeed(item, threshold) {
-	return measuredSpeedMbps(item) >= threshold;
-}
-
-function candidateKey(item) {
-	return `${item.host}:${item.port}`;
-}
-
-function compareCandidateScore(a, b) {
-	return scoreCandidate(b) - scoreCandidate(a);
-}
-
-function compareCheckedScore(a, b) {
-	const scoreCompare = scoreChecked(b) - scoreChecked(a);
-	if (scoreCompare) return scoreCompare;
-	return (a.probeMs || 9999) - (b.probeMs || 9999);
-}
-
-function scoreChecked(item) {
-	return scoreCandidate(item) - (item.probeMs || 9999) / SCORE_WEIGHTS.probeDivisor;
-}
-
-function scoreCandidate(item) {
-	const speed = measuredSpeedMbps(item);
-	const latency = Number.isFinite(item.latencyMs) ? item.latencyMs : 9999;
-	const countryBonus = orderedBonus(item.country, DEFAULT_COUNTRIES, SCORE_WEIGHTS.countryBase, SCORE_WEIGHTS.countryStep);
-	const portBonus = orderedBonus(item.port, DEFAULT_PORTS, SCORE_WEIGHTS.portBase, SCORE_WEIGHTS.portStep);
-	const sourceBonus = Math.max(0, SCORE_WEIGHTS.sourceBase - item.sourceIndex * SCORE_WEIGHTS.sourceStep);
-	const metricsBonus = Number.isFinite(item.speedMbps) || Number.isFinite(item.latencyMs) ? SCORE_WEIGHTS.metrics : 0;
-	return speed * SCORE_WEIGHTS.speed + metricsBonus + countryBonus + portBonus + sourceBonus - latency / SCORE_WEIGHTS.latencyDivisor;
-}
-
-function orderedBonus(value, orderedValues, base, step) {
-	const index = orderedValues.indexOf(value);
-	return index === -1 ? 0 : Math.max(0, base - index * step);
 }
 
 function formatNodeLines(items) {
@@ -671,12 +553,6 @@ function formatNodeLabel(item) {
 	const country = COUNTRY_LABELS[item.country] || item.country || '未知';
 	const speed = Number.isFinite(item.localSpeedMbps) ? formatSpeed(item.localSpeedMbps) : (Number.isFinite(item.speedMbps) ? formatSpeed(item.speedMbps) : 'NA');
 	return `${country}-${speed}`;
-}
-
-function measuredSpeedMbps(item) {
-	if (Number.isFinite(item.localSpeedMbps)) return item.localSpeedMbps;
-	if (Number.isFinite(item.speedMbps)) return item.speedMbps;
-	return 0;
 }
 
 function formatSpeed(value) {
@@ -690,9 +566,9 @@ function formatEndpoint({ host, port }) {
 	return `${formattedHost}:${port}`;
 }
 
-function extractTraceField(text, field) {
-	const match = String(text || '').match(new RegExp(`(?:^|\\n)${field}=([^\\r\\n]+)`));
-	return match ? match[1] : '';
+function parseHttpStatusCode(responseHead) {
+	const match = String(responseHead || '').match(/^HTTP\/\d(?:\.\d)?\s+(\d{3})\b/i);
+	return match ? Number.parseInt(match[1], 10) : null;
 }
 
 function extractCountry(text) {
@@ -746,17 +622,39 @@ function safeDecode(value) {
 	}
 }
 
-function parseJson(text) {
-	try {
-		return JSON.parse(text);
-	} catch {
-		return null;
+function validateOptions(config) {
+	for (const [required, attempts, label] of [
+		[config.minProbeSuccesses, config.probeAttempts, 'probe'],
+		[config.minEdgeSuccesses, config.edgeAttempts, 'edge'],
+		[config.minSpeedSuccesses, config.speedAttempts, 'speed'],
+	]) {
+		if (required > attempts) throw new Error(`${label} success requirement cannot exceed attempt count.`);
 	}
+	if (config.minSourceSuccesses > SOURCES.length) throw new Error('Minimum source successes exceed the configured source count.');
+	if (config.minOutput > config.limit) throw new Error('Minimum output cannot exceed the output limit.');
+	if (config.edgePath && !config.edgeHost) throw new Error('EDGETUNNEL_PATH requires EDGETUNNEL_HOST.');
+	for (const [host, label] of [[config.traceHost, 'trace host'], [config.speedHost, 'speed host'], [config.edgeHost, 'EdgeTunnel host']]) {
+		if (host && !/^[A-Za-z0-9.-]+$/.test(host)) throw new Error(`Invalid ${label}. Use a hostname without scheme, port, or path.`);
+	}
+	if (config.edgePath && /[\u0000-\u0020\u007f]/.test(config.edgePath)) throw new Error('Invalid EdgeTunnel path. Encode spaces and control characters.');
+	if (config.speedBytes <= 0 || config.connectTimeout <= 0 || config.speedTimeout <= 0) throw new Error('Timeouts and speed sample size must be positive.');
 }
 
-function numberOrNull(value) {
-	const number = Number(value);
-	return Number.isFinite(number) ? number : null;
+function firstText(...values) {
+	for (const value of values) {
+		const text = textArg(value);
+		if (text) return text;
+	}
+	return '';
+}
+
+function textArg(value) {
+	return value == null ? '' : String(value).trim();
+}
+
+function normalizePath(value) {
+	if (!value) return '';
+	return value.startsWith('/') ? value : `/${value}`;
 }
 
 function parseArgs(argv) {
@@ -789,4 +687,9 @@ function listArg(value, fallback, upper) {
 function numberArg(value, fallback) {
 	const num = Number.parseInt(value, 10);
 	return Number.isFinite(num) && num >= 0 ? num : fallback;
+}
+
+function positiveNumberArg(value, fallback) {
+	const num = numberArg(value, fallback);
+	return num > 0 ? num : fallback;
 }
