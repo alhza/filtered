@@ -72,6 +72,9 @@ The workflow uses a single download test per candidate to avoid repeated probing
 ## Upstreams
 
 ```text
+https://raw.githubusercontent.com/weduolijia/-CF-IP/main/top10.txt
+https://raw.githubusercontent.com/vipmc838/cf_best_ip/main/cloudflare_bestip.txt
+https://raw.githubusercontent.com/gslege/CloudflareIP/main/All.txt
 https://ips.gaoji.uk/best_ips.txt
 https://raw.githubusercontent.com/svip-s/cloudflare_ip/refs/heads/main/best_ips.txt
 https://raw.githubusercontent.com/love-ztm/cfip/refs/heads/main/best_ips.txt
