@@ -10,13 +10,26 @@ and publishes a balanced high-speed result list.
 ```text
 filtered-best-nodes.txt
 filtered-best-nodes.json
+filtered-proxy-links.txt
+filtered-proxy-links.json
 ```
 
-Raw subscription source:
+EdgeTunnel front-address source:
 
 ```text
 https://raw.githubusercontent.com/alhza/filtered/main/filtered-best-nodes.txt
 ```
+
+EdgeTunnel full proxy-link source:
+
+```text
+https://raw.githubusercontent.com/alhza/filtered/main/filtered-proxy-links.txt
+```
+
+Add the two URLs separately in the EdgeTunnel settings page. The first list is
+used to generate EdgeTunnel nodes with the deployment's UUID, SNI, and path;
+the second list contains complete VLESS, VMess, Trojan, and Shadowsocks links
+that EdgeTunnel merges into the final subscription unchanged.
 
 Line format:
 
@@ -39,6 +52,17 @@ Selection priority:
 ```powershell
 node .\cf-filter-local.mjs --limit 150 --scan 5000 --concurrency 120 --timeout 2500 --max-probe 1800 --speed-scan 200 --speed-bytes 1048576 --speed-concurrency 8 --speed-timeout 8000 --min-speed-ms 50 --min-speed 10 --fallback-min-speed 5
 ```
+
+Filter complete public proxy links separately:
+
+```powershell
+node .\proxy-filter-local.mjs --limit 500 --scan 1200 --concurrency 100 --timeout 2500
+```
+
+The proxy-link filter validates syntax, deduplicates configurations while
+ignoring display-name-only differences, and performs one TCP reachability test
+per unique server endpoint. It does not treat full proxy links as Cloudflare
+front addresses.
 
 Useful options:
 
@@ -105,4 +129,18 @@ https://cdn.jsdelivr.net/gh/HandsomeMJZ/cfip@main/best_ips.txt
 https://cdn.jsdelivr.net/gh/HandsomeMJZ/cfip@main/full_ips.txt
 https://cdn.jsdelivr.net/gh/ymyuuu/IPDB@main/BestCF/bestcfv6.txt
 https://ip.164746.xyz/ipTop10.html
+```
+
+## Proxy-link Upstreams
+
+```text
+https://github.com/Au1rxx/free-vpn-subscriptions
+https://github.com/0xRadikal/Free-v2ray-Configs
+https://github.com/Pawdroid/Free-servers
+https://github.com/chengaopan/AutoMergePublicNodes
+https://github.com/roosterkid/openproxylist
+https://github.com/mahdibland/V2RayAggregator
+https://github.com/ebrasha/free-v2ray-public-list
+https://github.com/mfuu/v2ray
+https://github.com/shaoyouvip/free
 ```
