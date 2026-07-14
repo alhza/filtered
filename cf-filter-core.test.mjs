@@ -5,8 +5,11 @@ import {
 	aggregateProbeAttempts,
 	aggregateSpeedAttempts,
 	calculateLocalSpeedMbps,
+	classifyAvailability,
+	compareCheckedScore,
 	selectFinalNodes,
 	selectPriorityFill,
+	selectSearchQueue,
 	validateCloudflareTraceResponse,
 	validateWebSocketUpgradeResponse,
 } from './cf-filter-core.mjs';
@@ -82,6 +85,34 @@ test('aggregateSpeedAttempts uses median speed and records the weakest successfu
 	assert.equal(result.speedSuccesses, 3);
 	assert.equal(result.localSpeedMbps, 12);
 	assert.equal(result.localSpeedMinMbps, 8);
+});
+
+test('classifyAvailability does not call a generic Cloudflare check available', () => {
+	const result = classifyAvailability({ ok: true, speedOk: true }, {
+		verificationLevel: 'cloudflare-trace',
+		speedVerificationConfigured: true,
+	});
+
+	assert.equal(result.status, 'unverified');
+	assert.equal(result.cloudflareReachable, true);
+	assert.equal(result.targetVerified, null);
+	assert.equal(result.speedVerified, true);
+});
+
+test('classifyAvailability requires a successful EdgeTunnel check for available', () => {
+	const available = classifyAvailability({ ok: true, edgeOk: true, speedOk: true }, {
+		verificationLevel: 'edge-websocket',
+		speedVerificationConfigured: true,
+	});
+	const failed = classifyAvailability({ ok: true, edgeOk: false, speedOk: true }, {
+		verificationLevel: 'edge-websocket',
+		speedVerificationConfigured: true,
+	});
+
+	assert.equal(available.status, 'available');
+	assert.equal(available.targetVerified, true);
+	assert.equal(failed.status, 'unavailable');
+	assert.equal(failed.targetVerified, false);
 });
 
 test('selectFinalNodes keeps only nodes at or above the minimum speed', () => {
@@ -188,6 +219,66 @@ test('selectPriorityFill caps preflight queues when all candidates are fast', ()
 	});
 
 	assert.deepEqual(selected.map(item => item.host), ['fast-1', 'fast-2']);
+});
+
+test('selectPriorityFill balances high-speed candidates before applying the cap', () => {
+	const nodes = [
+		node('us-1', 'US', 30, 10),
+		node('us-2', 'US', 29, 10),
+		node('us-3', 'US', 28, 10),
+		node('jp-1', 'JP', 10, 10),
+	];
+
+	const selected = selectPriorityFill(nodes, {
+		targetSize: 2,
+		maxSize: 2,
+		minKeepSpeed: 10,
+		balanced: true,
+		countries: ['US', 'JP'],
+		compareFn: (a, b) => b.localSpeedMbps - a.localSpeedMbps,
+	});
+
+	assert.deepEqual(selected.map(item => item.host), ['us-1', 'jp-1']);
+});
+
+test('selectSearchQueue reserves exploration slots for candidates without upstream metrics', () => {
+	const nodes = [
+		{ ...node('ranked-1', 'US', null, null), speedMbps: 100, latencyMs: 10 },
+		{ ...node('ranked-2', 'JP', null, null), speedMbps: 90, latencyMs: 20 },
+		{ ...node('ranked-3', 'SG', null, null), speedMbps: 80, latencyMs: 30 },
+		{ ...node('ranked-4', 'HK', null, null), speedMbps: 70, latencyMs: 40 },
+		{ ...node('unknown-1', 'US', null, null), speedMbps: null, latencyMs: null },
+		{ ...node('unknown-2', 'JP', null, null), speedMbps: null, latencyMs: null },
+	];
+
+	const selected = selectSearchQueue(nodes, {
+		queueSize: 4,
+		explorationRatio: 0.5,
+		seed: 'test-run',
+		minKeepSpeed: 10,
+		balanced: false,
+		countries: ['US', 'JP', 'SG', 'HK'],
+		compareFn: (a, b) => (b.speedMbps || 0) - (a.speedMbps || 0),
+	});
+
+	assert.deepEqual(selected.slice(0, 2).map(item => item.host), ['ranked-1', 'ranked-2']);
+	assert.deepEqual(new Set(selected.slice(2).map(item => item.host)), new Set(['unknown-1', 'unknown-2']));
+	assert.deepEqual(selected.map(item => item.searchLane), ['ranked', 'ranked', 'exploration', 'exploration']);
+});
+
+test('compareCheckedScore ignores stale upstream speed before local measurement', () => {
+	const slowProbeWithUpstreamSpeed = {
+		...node('stale-fast', 'US', null, 1000),
+		speedMbps: 100,
+		latencyMs: 10,
+	};
+	const fastProbeWithoutMetrics = {
+		...node('actually-responsive', 'US', null, 100),
+		speedMbps: null,
+		latencyMs: null,
+	};
+
+	assert.ok(compareCheckedScore(fastProbeWithoutMetrics, slowProbeWithUpstreamSpeed) < 0);
 });
 
 test('calculateLocalSpeedMbps rejects burst samples that finish too quickly', () => {

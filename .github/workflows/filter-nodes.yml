@@ -36,14 +36,15 @@ jobs:
       - name: Show verification mode
         shell: bash
         run: |
+          echo "Probe scope: GitHub-hosted runner; geographic region is not controlled."
           if [[ -n "$EDGETUNNEL_HOST" && -n "$EDGETUNNEL_PATH" ]]; then
-            echo "Using verified Cloudflare trace plus EdgeTunnel WebSocket checks."
+            echo "Publishing target-verified availability from this runner using Cloudflare trace plus EdgeTunnel WebSocket checks."
           elif [[ -n "$EDGETUNNEL_HOST" ]]; then
-            echo "Using verified Cloudflare trace for the configured EdgeTunnel host."
+            echo "Checking the configured target host without its WebSocket path; published candidates remain unverified."
           elif [[ -n "$CF_TRACE_HOST" ]]; then
-            echo "Using verified Cloudflare trace for the configured host."
+            echo "Checking the configured Cloudflare host only; published candidates remain unverified."
           else
-            echo "Using verified Cloudflare trace for speed.cloudflare.com."
+            echo "Checking speed.cloudflare.com only; published candidates remain unverified."
           fi
 
       - name: Filter high-speed balanced nodes
@@ -51,6 +52,7 @@ jobs:
           node cf-filter-local.mjs \
             --limit 150 \
             --scan 3000 \
+            --exploration-ratio 0.25 \
             --concurrency 120 \
             --timeout 2500 \
             --max-probe 1200 \

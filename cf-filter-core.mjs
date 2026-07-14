@@ -92,6 +92,30 @@ export function aggregateSpeedAttempts(attempts, requiredSuccesses = 1) {
 	};
 }
 
+export function classifyAvailability(item, {
+	verificationLevel = 'cloudflare-trace',
+	speedVerificationConfigured = true,
+} = {}) {
+	const cloudflareReachable = item.ok === true;
+	const targetVerificationConfigured = verificationLevel === 'edge-websocket';
+	const targetVerified = targetVerificationConfigured ? item.edgeOk === true : null;
+	const speedVerified = speedVerificationConfigured ? item.speedOk === true : null;
+	const configuredChecksPassed = cloudflareReachable
+		&& (!targetVerificationConfigured || targetVerified)
+		&& (!speedVerificationConfigured || speedVerified);
+	const status = !configuredChecksPassed
+		? 'unavailable'
+		: (targetVerificationConfigured ? 'available' : 'unverified');
+
+	return {
+		status,
+		verificationLevel,
+		cloudflareReachable,
+		targetVerified,
+		speedVerified,
+	};
+}
+
 function parseHttpResponse(responseText) {
 	const text = String(responseText || '');
 	const separator = text.indexOf('\r\n\r\n');
@@ -147,8 +171,12 @@ export function selectPriorityFill(candidates, { targetSize, minKeepSpeed, fallb
 	const highSpeed = candidates
 		.filter(item => isHighSpeed(item, minKeepSpeed))
 		.sort(compareFn);
+	const highSpeedLimit = Math.min(highSpeed.length, maxSize);
+	const prioritizedHighSpeed = balanced
+		? balancedTake(groupAndSort(highSpeed, compareFn), highSpeedLimit, countries).sort(compareFn)
+		: highSpeed.slice(0, highSpeedLimit);
 
-	for (const item of highSpeed) {
+	for (const item of prioritizedHighSpeed) {
 		if (selected.size >= maxSize) break;
 		selected.set(candidateKey(item), item);
 	}
@@ -164,6 +192,58 @@ export function selectPriorityFill(candidates, { targetSize, minKeepSpeed, fallb
 	for (const item of fill) {
 		if (selected.size >= maxSize) break;
 		selected.set(candidateKey(item), item);
+	}
+	return [...selected.values()];
+}
+
+export function selectSearchQueue(candidates, {
+	queueSize,
+	explorationRatio = 0.25,
+	seed = '',
+	minKeepSpeed,
+	balanced,
+	countries,
+	compareFn,
+}) {
+	const size = Math.max(0, Math.min(Math.trunc(queueSize) || 0, candidates.length));
+	if (size === 0) return [];
+	const ratio = Number.isFinite(explorationRatio)
+		? Math.min(1, Math.max(0, explorationRatio))
+		: 0.25;
+	const explorationSize = Math.min(size, Math.floor(size * ratio));
+	const rankedSize = size - explorationSize;
+	const selected = new Map();
+	const ranked = selectPriorityFill(candidates, {
+		targetSize: rankedSize,
+		maxSize: rankedSize,
+		minKeepSpeed,
+		balanced,
+		countries,
+		compareFn,
+	});
+	for (const item of ranked) selected.set(candidateKey(item), { ...item, searchLane: 'ranked' });
+
+	const remaining = candidates.filter(item => !selected.has(candidateKey(item)));
+	const explorationRanks = new Map(remaining.map(item => [
+		candidateKey(item),
+		createHash('sha256').update(`${seed}\0${candidateKey(item)}`).digest('hex'),
+	]));
+	const compareExploration = (a, b) => {
+		const evidenceCompare = upstreamEvidenceCount(a) - upstreamEvidenceCount(b);
+		if (evidenceCompare) return evidenceCompare;
+		return explorationRanks.get(candidateKey(a)).localeCompare(explorationRanks.get(candidateKey(b)));
+	};
+	const explorationCandidates = balanced
+		? balancedTake(groupAndSort(remaining, compareExploration), explorationSize, countries)
+		: remaining.sort(compareExploration).slice(0, explorationSize);
+	for (const item of explorationCandidates) selected.set(candidateKey(item), { ...item, searchLane: 'exploration' });
+
+	if (selected.size < size) {
+		const fill = candidates
+			.filter(item => !selected.has(candidateKey(item)))
+			.sort(compareFn)
+			.slice(0, size - selected.size);
+		for (const item of fill) selected.set(candidateKey(item), { ...item, searchLane: 'ranked' });
 	}
 	return [...selected.values()];
 }
@@ -215,6 +295,10 @@ function candidateKey(item) {
 	return `${item.host}:${item.port}`;
 }
 
+function upstreamEvidenceCount(item) {
+	return Number(Number.isFinite(item.speedMbps)) + Number(Number.isFinite(item.latencyMs));
+}
+
 export function compareCandidateScore(a, b) {
 	return scoreCandidate(b) - scoreCandidate(a);
 }
@@ -226,7 +310,13 @@ export function compareCheckedScore(a, b) {
 }
 
 function scoreChecked(item) {
-	return scoreCandidate(item) - (item.probeMs || 9999) / SCORE_WEIGHTS.probeDivisor;
+	const speed = Number.isFinite(item.localSpeedMbps) ? item.localSpeedMbps : 0;
+	const countryBonus = orderedBonus(item.country, DEFAULT_COUNTRIES, SCORE_WEIGHTS.countryBase, SCORE_WEIGHTS.countryStep);
+	const portBonus = orderedBonus(item.port, DEFAULT_PORTS, SCORE_WEIGHTS.portBase, SCORE_WEIGHTS.portStep);
+	const sourceBonus = Math.max(0, SCORE_WEIGHTS.sourceBase - item.sourceIndex * SCORE_WEIGHTS.sourceStep);
+	const metricsBonus = Number.isFinite(item.localSpeedMbps) ? SCORE_WEIGHTS.metrics : 0;
+	const probeMs = Number.isFinite(item.probeMs) ? item.probeMs : 9999;
+	return speed * SCORE_WEIGHTS.speed + metricsBonus + countryBonus + portBonus + sourceBonus - probeMs / SCORE_WEIGHTS.probeDivisor;
 }
 
 function scoreCandidate(item) {

@@ -5,6 +5,7 @@ import {
 	aggregateProbeAttempts,
 	aggregateSpeedAttempts,
 	calculateLocalSpeedMbps,
+	classifyAvailability,
 	compareCandidateScore,
 	compareCheckedScore,
 	DEFAULT_COUNTRIES,
@@ -13,6 +14,7 @@ import {
 	measuredSpeedMbps,
 	selectFinalNodes,
 	selectPriorityFill,
+	selectSearchQueue,
 	validateCloudflareTraceResponse,
 	validateWebSocketUpgradeResponse,
 } from './cf-filter-core.mjs';
@@ -65,6 +67,8 @@ const edgePath = normalizePath(firstText(args.edgePath, args['edge-path'], proce
 const options = {
 	limit: numberArg(args.limit, 150),
 	scan: numberArg(args.scan, 4000),
+	explorationRatio: decimalArg(args.explorationRatio ?? args['exploration-ratio'], 0.25),
+	searchSeed: firstText(args.searchSeed, args['search-seed'], process.env.GITHUB_RUN_ID) || new Date().toISOString().slice(0, 10),
 	connectTimeout: numberArg(args.timeout, 1600),
 	maxProbe: numberArg(args.maxProbe ?? args['max-probe'] ?? args.maxTcp ?? args['max-tcp'], 1200),
 	probeAttempts: positiveNumberArg(args.probeAttempts ?? args['probe-attempts'], 3),
@@ -102,6 +106,7 @@ await run();
 
 async function run() {
 	const startedAt = Date.now();
+	const probe = buildProbeContext();
 	const fetched = await fetchSources(SOURCES);
 	const sourceSuccesses = fetched.filter(source => source.ok).length;
 	if (sourceSuccesses < options.minSourceSuccesses) {
@@ -111,18 +116,36 @@ async function run() {
 	const scoped = applyStaticFilters(parsed, options);
 	const queue = selectCheckQueue(scoped, options);
 	const checked = await checkCandidates(queue, options);
-	const usable = filterUsableChecked(checked, options);
+	const cloudflareReachable = filterCloudflareReachable(checked, options);
 	const edgeEnabled = Boolean(options.edgeHost && options.edgePath);
-	const speedQueue = options.speedTest || edgeEnabled ? selectSpeedQueue(usable, options) : usable;
+	const speedQueue = options.speedTest || edgeEnabled ? selectSpeedQueue(cloudflareReachable, options) : cloudflareReachable;
 	const edgeChecked = edgeEnabled ? await checkEdgeCandidates(speedQueue, options) : [];
-	const edgeUsable = edgeEnabled ? edgeChecked.filter(item => item.edgeOk) : speedQueue;
-	const measured = options.speedTest ? await speedTestCandidates(edgeUsable, options) : edgeUsable;
-	const speedUsable = options.speedTest ? measured.filter(item => item.speedOk) : measured;
-	const selected = selectFinalNodes(speedUsable, options);
+	const targetEligible = edgeEnabled ? edgeChecked.filter(item => item.edgeOk) : speedQueue;
+	const measured = options.speedTest ? await speedTestCandidates(targetEligible, options) : targetEligible;
+	const speedVerified = options.speedTest ? measured.filter(item => item.speedOk) : measured;
+	const selected = selectFinalNodes(speedVerified, options);
 	if (selected.length < options.minOutput) {
 		throw new Error(`Only ${selected.length} nodes passed; minimum output is ${options.minOutput}. Previous published results remain unchanged.`);
 	}
-	const context = { startedAt, fetched, parsed, scoped, queue, checked, usable, speedQueue, edgeEnabled, edgeChecked, edgeUsable, measured, speedUsable, selected, options };
+	const context = {
+		startedAt,
+		generatedAt: new Date().toISOString(),
+		probe,
+		fetched,
+		parsed,
+		scoped,
+		queue,
+		checked,
+		cloudflareReachable,
+		speedQueue,
+		edgeEnabled,
+		edgeChecked,
+		targetEligible,
+		measured,
+		speedVerified,
+		selected,
+		options,
+	};
 
 	await writeOutputs(context);
 	printSummary(context);
@@ -133,34 +156,75 @@ async function writeOutputs(context) {
 	await fs.writeFile(context.options.json, JSON.stringify(buildReport(context), null, 2), 'utf8');
 }
 
-function buildReport({ startedAt, fetched, parsed, scoped, queue, checked, usable, speedQueue, edgeEnabled, edgeChecked, edgeUsable, measured, speedUsable, selected, options }) {
+function buildReport({ startedAt, generatedAt, probe, fetched, parsed, scoped, queue, checked, cloudflareReachable, speedQueue, edgeEnabled, edgeChecked, targetEligible, measured, speedVerified, selected, options }) {
+	const level = verificationLevel(options);
+	const nodes = selected.map(item => ({
+		...item,
+		availability: {
+			...classifyAvailability(item, {
+				verificationLevel: level,
+				speedVerificationConfigured: options.speedTest,
+			}),
+			probeScope: probe.scope,
+			checkedAt: generatedAt,
+		},
+	}));
 	return {
-		generatedAt: new Date().toISOString(),
+		generatedAt,
 		elapsedMs: Date.now() - startedAt,
+		probe,
+		verification: {
+			level,
+			targetVerificationConfigured: edgeEnabled,
+			publishedNodeStatus: edgeEnabled ? 'available' : 'unverified',
+			limitation: edgeEnabled
+				? null
+				: 'No EdgeTunnel WebSocket target was configured; published nodes are Cloudflare-reachable candidates, not globally available nodes.',
+		},
 		sources: fetched.map(formatSourceSummary),
 		options: publicOptions(options),
-		stats: buildStats({ parsed, scoped, queue, checked, usable, speedQueue, edgeEnabled, edgeChecked, edgeUsable, measured, speedUsable, selected, options }),
-		nodes: selected,
+		stats: buildStats({ parsed, scoped, queue, checked, cloudflareReachable, speedQueue, edgeEnabled, edgeChecked, targetEligible, measured, speedVerified, selected, options, level }),
+		nodes,
 	};
 }
 
-function buildStats({ parsed, scoped, queue, checked, usable, speedQueue, edgeEnabled, edgeChecked, edgeUsable, measured, speedUsable, selected, options }) {
+function buildStats({ parsed, scoped, queue, checked, cloudflareReachable, speedQueue, edgeEnabled, edgeChecked, targetEligible, measured, speedVerified, selected, options, level }) {
+	const availabilityCounts = selected.reduce((counts, item) => {
+		const status = classifyAvailability(item, {
+			verificationLevel: level,
+			speedVerificationConfigured: options.speedTest,
+		}).status;
+		counts[status] = (counts[status] || 0) + 1;
+		return counts;
+	}, {});
 	return {
 		parsed: parsed.length,
 		scoped: scoped.length,
 		queued: queue.length,
+		searchQueue: countBy(queue, 'searchLane'),
 		checked: checked.length,
-		usable: usable.length,
+		cloudflareReachable: cloudflareReachable.length,
+		usable: availabilityCounts.available || 0,
+		targetVerificationConfigured: edgeEnabled,
+		targetQueued: edgeEnabled ? speedQueue.length : 0,
+		targetChecked: edgeChecked.length,
+		targetVerified: edgeEnabled ? targetEligible.length : 0,
 		edgeEnabled,
 		edgeQueued: edgeEnabled ? speedQueue.length : 0,
 		edgeChecked: edgeChecked.length,
-		edgeUsable: edgeEnabled ? edgeUsable.length : 0,
-		speedQueued: edgeUsable.length,
+		edgeUsable: edgeEnabled ? targetEligible.length : 0,
+		speedQueued: targetEligible.length,
 		speedTested: measured.length,
-		speedUsable: speedUsable.length,
+		speedVerified: speedVerified.length,
+		speedUsable: speedVerified.length,
 		selected: selected.length,
+		availability: {
+			available: availabilityCounts.available || 0,
+			unverified: availabilityCounts.unverified || 0,
+			unavailable: availabilityCounts.unavailable || 0,
+		},
 		highSpeedQueued: queue.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
-		highSpeedUsable: speedUsable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
+		highSpeedSpeedVerified: speedVerified.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
 		highSpeedSelected: selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length,
 		fallbackSpeedSelected: selected.filter(item => !isHighSpeed(item, options.minKeepSpeed) && isHighSpeed(item, options.fallbackMinSpeed)).length,
 		countryDistribution: countBy(selected, 'country'),
@@ -180,9 +244,10 @@ function formatSourceSummary(item) {
 	};
 }
 
-function printSummary({ parsed, scoped, queue, checked, usable, edgeEnabled, edgeUsable, speedUsable, selected, options }) {
-	console.log(`parsed=${parsed.length} scoped=${scoped.length} queued=${queue.length} checked=${checked.length} usable=${usable.length} edge=${edgeEnabled ? edgeUsable.length : 'disabled'} speedQueued=${edgeUsable.length} speedUsable=${speedUsable.length} selected=${selected.length}`);
-	console.log(`highSpeed>${options.minKeepSpeed}Mbps queued=${queue.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} usable=${speedUsable.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} selected=${selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length}`);
+function printSummary({ probe, parsed, scoped, queue, checked, cloudflareReachable, edgeEnabled, targetEligible, speedVerified, selected, options }) {
+	console.log(`probeScope=${probe.scope} region=${probe.region || 'unverified'} availability=${edgeEnabled ? 'target-verified' : 'unverified'}`);
+	console.log(`parsed=${parsed.length} scoped=${scoped.length} queued=${queue.length} checked=${checked.length} cloudflareReachable=${cloudflareReachable.length} target=${edgeEnabled ? targetEligible.length : 'not-configured'} speedQueued=${targetEligible.length} speedVerified=${speedVerified.length} selected=${selected.length}`);
+	console.log(`highSpeed>${options.minKeepSpeed}Mbps queued=${queue.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} speedVerified=${speedVerified.filter(item => isHighSpeed(item, options.minKeepSpeed)).length} selected=${selected.filter(item => isHighSpeed(item, options.minKeepSpeed)).length}`);
 	console.log(`fallback>=${options.fallbackMinSpeed}Mbps selected=${selected.filter(item => !isHighSpeed(item, options.minKeepSpeed) && isHighSpeed(item, options.fallbackMinSpeed)).length}`);
 	console.log(`countries=${JSON.stringify(countBy(selected, 'country'))}`);
 	console.log(`ports=${JSON.stringify(countBy(selected, 'port'))}`);
@@ -323,6 +388,27 @@ function publicOptions(options) {
 	};
 }
 
+function buildProbeContext() {
+	const githubActions = process.env.GITHUB_ACTIONS === 'true';
+	return {
+		provider: githubActions ? 'github-actions' : 'local',
+		scope: githubActions ? 'github-hosted-runner' : 'current-machine',
+		region: null,
+		regionVerified: false,
+		locationControl: githubActions ? 'uncontrolled' : 'current-network',
+		runnerOs: firstText(process.env.RUNNER_OS, process.platform),
+		runnerArch: firstText(process.env.RUNNER_ARCH, process.arch),
+		runId: firstText(process.env.GITHUB_RUN_ID) || null,
+		runAttempt: firstText(process.env.GITHUB_RUN_ATTEMPT) || null,
+	};
+}
+
+function verificationLevel(config) {
+	if (config.edgeHost && config.edgePath) return 'edge-websocket';
+	if (config.edgeHost) return 'target-host-trace';
+	return 'cloudflare-trace';
+}
+
 function probeCloudflareTraceOnce(candidate, timeoutMs, traceHost) {
 	return new Promise(resolve => {
 		const start = Date.now();
@@ -366,9 +452,10 @@ function probeCloudflareTraceOnce(candidate, timeoutMs, traceHost) {
 
 function selectCheckQueue(candidates, options) {
 	const queueSize = Math.max(options.scan, options.limit);
-	return selectPriorityFill(candidates, {
-		targetSize: queueSize,
-		maxSize: queueSize,
+	return selectSearchQueue(candidates, {
+		queueSize,
+		explorationRatio: options.explorationRatio,
+		seed: options.searchSeed,
 		minKeepSpeed: options.minKeepSpeed,
 		balanced: options.balanced,
 		countries: options.countries,
@@ -376,7 +463,7 @@ function selectCheckQueue(candidates, options) {
 	});
 }
 
-function filterUsableChecked(items, { countries, maxProbe }) {
+function filterCloudflareReachable(items, { countries, maxProbe }) {
 	const countrySet = new Set(countries);
 	return items.filter(item => {
 		const countryOk = countrySet.size === 0 || countrySet.has(item.country);
@@ -637,6 +724,7 @@ function validateOptions(config) {
 		if (host && !/^[A-Za-z0-9.-]+$/.test(host)) throw new Error(`Invalid ${label}. Use a hostname without scheme, port, or path.`);
 	}
 	if (config.edgePath && /[\u0000-\u0020\u007f]/.test(config.edgePath)) throw new Error('Invalid EdgeTunnel path. Encode spaces and control characters.');
+	if (config.explorationRatio < 0 || config.explorationRatio > 1) throw new Error('Exploration ratio must be between 0 and 1.');
 	if (config.speedBytes <= 0 || config.connectTimeout <= 0 || config.speedTimeout <= 0) throw new Error('Timeouts and speed sample size must be positive.');
 }
 
@@ -687,6 +775,11 @@ function listArg(value, fallback, upper) {
 function numberArg(value, fallback) {
 	const num = Number.parseInt(value, 10);
 	return Number.isFinite(num) && num >= 0 ? num : fallback;
+}
+
+function decimalArg(value, fallback) {
+	const num = Number.parseFloat(value);
+	return Number.isFinite(num) ? num : fallback;
 }
 
 function positiveNumberArg(value, fallback) {
